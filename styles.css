@@ -835,6 +835,39 @@ button.balance-row {
   font-size: 18px;
 }
 
+/* 没有消耗数据时的主动作。做成一个明显的按钮而不是一行灰字 ——
+   这是这一页上最需要被点一下的东西。 */
+.sync-cta {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  margin: 4px 0 8px;
+  padding: 13px 14px;
+  background: var(--surface-2);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sync-cta:active {
+  background: var(--surface);
+}
+
+.sync-cta-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.sync-cta-sub {
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.4;
+}
+
 /* ── 记录按钮与列表 ────────────────────────────────────────────────── */
 
 .wide {
