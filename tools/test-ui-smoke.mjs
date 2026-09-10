@@ -88,9 +88,18 @@ class Node {
     return this._classList
   }
   get className() {
+    if (this.namespaceURI === SVG_NS) return this.attributes.class || ''
     return this._classList.toString()
   }
   set className(value) {
+    // 真实 DOM 里 SVGElement.className 是**只读**的 SVGAnimatedString，
+    // 严格模式下赋值会抛 TypeError。桩必须照做 —— 否则「给 SVG 元素设 class」
+    // 这类 bug 在测试里完全测不出来（我们就这么漏过一次，两个图表全废）。
+    if (this.namespaceURI === SVG_NS) {
+      throw new TypeError(
+        "Cannot set property className of #<SVGElement> which has only a getter",
+      )
+    }
     this._classList = new ClassList()
     String(value)
       .split(/\s+/)
@@ -144,6 +153,15 @@ class Node {
   setAttribute(name, value) {
     this.attributes[name] = String(value)
     if (name === 'value') this._value = String(value)
+    // 真实 DOM 里 class 属性和 classList 是同一份数据，桩必须同步，
+    // 否则用 setAttribute('class', …) 建的 SVG 元素在测试里选不中
+    if (name === 'class') {
+      this._classList = new ClassList()
+      String(value)
+        .split(/\s+/)
+        .filter(Boolean)
+        .forEach((c) => this._classList.add(c))
+    }
   }
   getAttribute(name) {
     return name in this.attributes ? this.attributes[name] : null
@@ -259,6 +277,8 @@ function matches(node, selector) {
 }
 
 const documentRoot = new Node('#document')
+
+const SVG_NS = 'http://www.w3.org/2000/svg'
 
 const documentStub = {
   createElement: (tag) => new Node(tag),
