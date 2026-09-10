@@ -312,6 +312,18 @@ token 只会用于创建仓库和上传文件，不会出现在任何输出里�
       console.error('多半是仓库名已被占用，或者 token 没有创建仓库的权限。')
       console.error('可以加 --name=别的名字 换一个。')
     }
+    const message = `${error.message} ${(error.cause && error.cause.message) || ''}`
+    if (/fetch failed|certificate|UNABLE_TO_VERIFY/i.test(message)) {
+      console.error(`
+提示：这是证书问题，不是网络不通。
+
+这台机器的 hosts 把 github 域名指到了本地代理，代理用自己的证书做中间人；
+而 Node 默认只用自带的 CA 库，不读 Windows 证书库。加一个参数即可：
+
+  node --use-system-ca tools/deploy.mjs
+
+（或者用 npm run deploy —— 那个脚本里已经带上了这个参数。）`)
+    }
     process.exit(1)
   })
 }
