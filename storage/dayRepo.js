@@ -19,7 +19,7 @@ const STORE = 'dayHealth'
 
 export const SOURCE_MANUAL = 'manual'
 export const SOURCE_SHORTCUT = 'shortcut'
-export const SOURCE_RELAY = 'relay'
+export const SOURCE_MAILBOX = 'mailbox'
 
 export async function getDayHealth(date) {
   return (await get(STORE, date)) || null
