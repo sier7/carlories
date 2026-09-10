@@ -31,22 +31,28 @@ import {
   saveEntry,
   deleteEntry,
 } from '../storage/logRepo.js'
-import { getSettings, saveTargets } from '../storage/settingsRepo.js'
+import { getSettings, saveTargets, saveSyncConfig } from '../storage/settingsRepo.js'
 import {
   getDayHealth,
   setDayHealth,
   clearDayHealth,
   importHealthRecords,
   listDayHealthInRange,
+  SOURCE_RELAY,
 } from '../storage/dayRepo.js'
-import { parseHealthPayload, recordForDate, describeRecords } from '../core/healthSync.js'
+import {
+  parseHealthPayload,
+  recordForDate,
+  describeRecords,
+  buildRelayUrl,
+} from '../core/healthSync.js'
 import { dayView } from './dayView.js'
 import { trendView } from './trendView.js'
 import { libraryView } from './libraryView.js'
 import { createFoodForm } from './foodForm.js'
 import { openFoodPicker } from './foodPicker.js'
 import { openFreeEntryForm } from './freeEntryForm.js'
-import { openEntrySheet, openTargetsSheet, openBurnSheet } from './sheets.js'
+import { openEntrySheet, openTargetsSheet, openBurnSheet, openSyncSheet } from './sheets.js'
 import { openOverlay, toast, closeOverlay } from './widgets.js'
 
 const root = document.getElementById('app')
@@ -64,6 +70,7 @@ const state = {
   query: '',
   rangeDays: 7,
   summary: null,
+  sync: null,
 }
 
 init()
@@ -77,6 +84,7 @@ async function refresh() {
   try {
     const settings = await getSettings()
     state.targets = settings.targets
+    state.sync = settings.sync
     state.foods = await listFoods()
 
     if (state.tab === 'day') {
@@ -100,26 +108,106 @@ async function refresh() {
 let autoSyncAttempted = false
 
 /**
- * 打开应用时自己试着读一次剪贴板。
+ * 打开应用时自己同步一次。
  *
- * 目标是省掉一次点击。**但它很可能失败** —— iOS 上 navigator.clipboard.readText()
- * 需要用户手势，而页面加载本身不算手势。所以这里是尽力而为：
- * 成功就静默导入，失败就什么也不做，把「同步健康数据」那个按钮留给用户。
- *
- * 只在数据缺失或超过 30 分钟时才试，免得每次打开都弹一个粘贴确认。
+ * 配了中继就从中继拉 —— 那不需要用户手势，可以安静地完成。
+ * 没配中继才退回读剪贴板，而那一步**很可能失败**（iOS 要求用户手势，
+ * 页面加载本身不算），所以是尽力而为：成功就静默导入，失败就什么都不做，
+ * 把按钮留给用户。
  */
 async function maybeAutoSync() {
   if (autoSyncAttempted) return
   autoSyncAttempted = true
 
   if (state.tab !== 'day') return
-  if (typeof navigator === 'undefined' || !navigator.clipboard) return
 
   const importedAt = state.health && state.health.importedAt
   const age = importedAt ? Date.now() - new Date(importedAt).getTime() : Infinity
-  if (age < 30 * 60 * 1000) return
 
+  if (relayConfigured()) {
+    // 中继是网络请求，不打扰人，可以勤快一点
+    if (age < 5 * 60 * 1000) return
+    await pullFromRelay({ silent: true })
+    return
+  }
+
+  if (typeof navigator === 'undefined' || !navigator.clipboard) return
+  if (age < 30 * 60 * 1000) return
   await syncHealthFromClipboard({ silent: true })
+}
+
+function relayConfigured() {
+  return Boolean(state.sync && state.sync.endpoint && state.sync.token)
+}
+
+/** 有中继就用中继，没有就退回剪贴板 */
+async function smartSync(options = {}) {
+  if (relayConfigured()) return pullFromRelay(options)
+  return syncHealthFromClipboard(options)
+}
+
+/**
+ * 从中继拉取。
+ *
+ * 一次拉最近两周而不是只有今天 —— 中继上留着 400 天的数据，顺手补上
+ * 中间漏掉的日子几乎不花代价，而本地数据万一丢了也能从这里补回来。
+ */
+async function pullFromRelay({ silent = false, days = 14 } = {}) {
+  if (!relayConfigured()) {
+    if (!silent) toast('还没有配置中继。点「同步设置」粘贴配置串。', 'error')
+    return { ok: false, reason: 'not-configured' }
+  }
+
+  const to = dateKey()
+  const from = addDays(to, -(days - 1))
+
+  let response
+  try {
+    response = await fetch(buildRelayUrl(state.sync.endpoint, from, to), {
+      headers: { authorization: `Bearer ${state.sync.token}` },
+      cache: 'no-store',
+    })
+  } catch (error) {
+    if (!silent) toast(`连不上中继：${error.message}`, 'error')
+    return { ok: false, reason: 'network' }
+  }
+
+  if (response.status === 401) {
+    if (!silent) toast('中继拒绝了：口令不对。重新粘贴一次配置串。', 'error')
+    return { ok: false, reason: 'unauthorized' }
+  }
+  if (!response.ok) {
+    if (!silent) toast(`中继返回 ${response.status}`, 'error')
+    return { ok: false, reason: 'http', status: response.status }
+  }
+
+  let body = null
+  try {
+    body = await response.json()
+  } catch {
+    if (!silent) toast('中继返回的不是 JSON', 'error')
+    return { ok: false, reason: 'bad-body' }
+  }
+
+  const records = (body && Array.isArray(body.records) ? body.records : []).map((record) => ({
+    ...record,
+    source: SOURCE_RELAY,
+  }))
+
+  if (records.length === 0) {
+    if (!silent) toast('中继上还没有数据。先在手机上跑一次快捷指令。')
+    return { ok: false, reason: 'empty' }
+  }
+
+  try {
+    const written = await importHealthRecords(records)
+    await refresh()
+    toast(`已从中继同步 ${written.length} 天`)
+    return { ok: true, count: written.length }
+  } catch (error) {
+    if (!silent) toast(`写入失败：${error.message}`, 'error')
+    return { ok: false, reason: 'write-failed' }
+  }
 }
 
 /**
@@ -227,7 +315,8 @@ const handlers = {
   openEntry: openEntryEditor,
   openTargets: openTargetsEditor,
   openBurn: openBurnEditor,
-  syncHealth: syncHealthFromClipboard,
+  openSync: openSyncEditor,
+  syncHealth: () => smartSync(),
   newFood: () => openFoodForm(null),
   editFood: (food) => openFoodForm(food),
   exportData,
@@ -429,6 +518,25 @@ function openBurnEditor() {
       await setDayHealth(state.date, { activeKcal, restingKcal })
       await refresh()
     },
+    onClear: async () => {
+      await clearDayHealth(state.date)
+      await refresh()
+      toast('已清除')
+    },
+  })
+}
+
+function openSyncEditor() {
+  openSyncSheet({
+    sync: state.sync,
+    health: state.health,
+    onSaveConfig: async (config) => {
+      await saveSyncConfig(config)
+      await refresh()
+      toast(config.endpoint ? '中继已配置，下次打开应用会自动同步' : '中继已关闭')
+    },
+    onPullRelay: () => pullFromRelay({}),
+    onPullClipboard: () => syncHealthFromClipboard({}),
     onClear: async () => {
       await clearDayHealth(state.date)
       await refresh()
