@@ -5,7 +5,7 @@ import { dateLabel, relativeLabel } from '../core/date.js'
 import { summarizeEntries, isEntryStale, isFreeEntry, entryHasMacros } from '../core/log.js'
 import { totalBurn, describeBalance } from '../core/balance.js'
 import { round } from '../core/food.js'
-import { freshness, SOURCE_SHORTCUT, SOURCE_RELAY } from '../storage/dayRepo.js'
+import { freshness, SOURCE_SHORTCUT, SOURCE_MAILBOX } from '../storage/dayRepo.js'
 import { fmtKcal, fmtGram, fmtAmount, percent } from './format.js'
 
 export function dayView(state, handlers) {
@@ -145,7 +145,7 @@ function macroRow(label, value, target) {
 
 const SOURCE_LABEL = {
   [SOURCE_SHORTCUT]: '来自快捷指令',
-  [SOURCE_RELAY]: '来自中继',
+  [SOURCE_MAILBOX]: '来自信箱',
 }
 
 function balance(health, burn, dayBalance, handlers) {
