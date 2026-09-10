@@ -21,6 +21,12 @@ const DEFAULTS = {
     fatG: null,
     carbG: null,
   },
+  // 中继（见 worker/index.js）。配置好之后应用打开时直接拉取，
+  // 不需要读剪贴板，也就不需要任何点击。
+  sync: {
+    endpoint: null,
+    token: null,
+  },
 }
 
 export async function getSettings() {
@@ -30,6 +36,7 @@ export async function getSettings() {
     ...structuredCloneSafe(DEFAULTS),
     ...doc.value,
     targets: { ...DEFAULTS.targets, ...(doc.value.targets || {}) },
+    sync: { ...DEFAULTS.sync, ...(doc.value.sync || {}) },
   }
 }
 
@@ -39,9 +46,25 @@ export async function saveSettings(patch) {
     ...current,
     ...patch,
     targets: { ...current.targets, ...(patch.targets || {}) },
+    sync: { ...current.sync, ...(patch.sync || {}) },
   }
   await put(STORE, { key: DOC_KEY, value: merged, updatedAt: new Date().toISOString() })
   return merged
+}
+
+/** 保存中继配置。地址为空即视为关闭中继。 */
+export async function saveSyncConfig({ endpoint, token }) {
+  const cleanEndpoint = endpoint ? String(endpoint).trim().replace(/\/+$/, '') : null
+  const cleanToken = token ? String(token).trim() : null
+
+  if (cleanEndpoint && !/^https?:\/\//i.test(cleanEndpoint)) {
+    throw new Error('中继地址要以 http:// 或 https:// 开头')
+  }
+  if (cleanEndpoint && !cleanToken) {
+    throw new Error('填了地址就要填口令，否则中继会拒绝')
+  }
+
+  return saveSettings({ sync: { endpoint: cleanEndpoint, token: cleanToken } })
 }
 
 export async function saveTargets(targets) {
