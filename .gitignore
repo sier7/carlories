@@ -4,5 +4,5 @@ node_modules/
 
 # 部署用的凭据 —— 绝不能被提交
 .github-token
-.cloudflare
-.relay-token
+.github-gist-token
+.gist-id
