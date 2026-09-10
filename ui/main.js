@@ -111,8 +111,8 @@ let autoSyncAttempted = false
 /**
  * 打开应用时自己同步一次。
  *
- * 配了中继就从中继拉 —— 那不需要用户手势，可以安静地完成。
- * 没配中继才退回读剪贴板，而那一步**很可能失败**（iOS 要求用户手势，
+ * 配了信箱就直接从 Gist 拉 —— 那不需要用户手势，可以安静地完成。
+ * 没配信箱才退回读剪贴板，而那一步**很可能失败**（iOS 要求用户手势，
  * 页面加载本身不算），所以是尽力而为：成功就静默导入，失败就什么都不做，
  * 把按钮留给用户。
  */
@@ -206,14 +206,24 @@ async function pullFromGist({ silent = false, force = false } = {}) {
 
   const content = extractGistContent(body)
   if (!content) {
-    if (!silent) toast('信箱里还没有内容。先在手机上跑一次快捷指令。')
+    if (!silent) {
+      toast('信箱里还没有数据 —— 快捷指令还没写进去过。先在快捷指令里手动运行一次。')
+    }
     return { ok: false, reason: 'empty' }
   }
 
   const { records, problems } = parseHealthPayload(content, { today: dateKey() })
   if (records.length === 0) {
-    if (!silent) toast(problems[0] || '信箱里的内容看不懂', 'error')
-    return { ok: false, reason: 'unparsable', problems }
+    if (!silent) {
+      // 把信箱里**实际的内容**报出来。排查这类问题时，这一句比任何猜测都有用 ——
+      // 「CAL/TODAY ACT=」这种半成品一眼就能看出来是快捷指令少插了变量。
+      toast(
+        `信箱里的内容解析不出数据。\n实际内容：「${String(content).slice(0, 80)}」\n`
+        + (problems[0] || ''),
+        'error',
+      )
+    }
+    return { ok: false, reason: 'unparsable', problems, content }
   }
 
   try {
@@ -552,7 +562,13 @@ function openSyncEditor() {
     onSaveConfig: async (config) => {
       await saveSyncConfig(config)
       await refresh()
-      toast(config.endpoint ? '中继已配置，下次打开应用会自动同步' : '中继已关闭')
+      if (!config.gistId) {
+        toast('自动同步已关闭')
+        return
+      }
+      toast('信箱已配置，正在试拉一次…')
+      // 立刻拉一次：让「到底通没通」当场有个结论，而不是等下次打开应用
+      await pullFromGist({ force: true })
     },
     onPullGist: (options) => pullFromGist(options || {}),
     onPullClipboard: () => syncHealthFromClipboard({}),
