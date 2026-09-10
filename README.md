@@ -70,16 +70,21 @@ node tools/serve.mjs --lan    # 同时监听局域网，便于手机上看界面
 
 ```bash
 node tools/deploy.mjs         # 推到 GitHub Pages，打印网址
+node tools/verify-site.mjs    # 逐个文件比对线上与本地，确认没有漏传
 ```
+
+> ⚠️ 不要用 PowerShell 的 `Invoke-WebRequest` 测站点：在这台机器上它连 github.io
+> 会 TLS 协商失败，会误报「站点没上线」。用 `verify-site.mjs`，它走 Node 的 fetch。
 
 完整步骤（含快捷指令的逐步配置）见 **`docs/装到手机上.md`**。
 
 ## 测试
 
 ```bash
-npm test              # 两个套件一起跑
+npm test              # 三个套件一起跑
 npm run test:core     # 192 项：换算、营养、校验、快照、日期、汇总、自由填写、历史索引、健康载荷
 npm run test:ui       # 103 项：模块链接、外壳、今日页、食物库页、表单、选食物、手动填写
+npm run test:deploy   #  48 项：对着模拟 GitHub 跑完整部署，含完整性检查与 token 解析
 ```
 
 `test:core` 覆盖的是**算错就会静默出错**的部分。界面错了看得见，算错了看不见。
@@ -151,9 +156,11 @@ app/
 tools/
   serve.mjs             零依赖静态服务器
   deploy.mjs            GitHub Pages 部署（走 REST API，无需 git）
+  verify-site.mjs       逐个文件比对线上与本地
   make-icons.mjs        生成 PNG 应用图标（自带最小 PNG 编码器）
   test-core.mjs         核心逻辑测试
   test-ui-smoke.mjs     界面测试（含最小 DOM 桩）
+  test-deploy.mjs       部署流程测试（对着模拟 GitHub API）
 docs/
   design-v0.1.md        设计草案
   装到手机上.md          部署 + 快捷指令逐步配置
