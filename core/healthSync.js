@@ -209,6 +209,15 @@ export const GIST_CONFIG_PREFIX = 'carlories-gist:v1|'
 export const GIST_FILENAME = 'carlories.txt'
 
 /**
+ * 信箱刚建好时的占位内容。
+ *
+ * 不能是空串或纯空白 —— GitHub 会以 422 拒绝「没有内容的文件」。
+ * 也不能是任何像载荷的东西，否则应用会把它当成数据读进去。
+ * 建好之后由快捷指令覆盖掉。
+ */
+export const GIST_PLACEHOLDER = '（还没有数据。快捷指令跑过一次后，这里会变成一行 CAL/TODAY ACT=… RST=…）'
+
+/**
  * 解析信箱配置。接受三种写法，因为用户可能从任何地方复制：
  *   carlories-gist:v1|<id>          ← 部署脚本打印的
  *   https://gist.github.com/<用户>/<id>
@@ -243,17 +252,26 @@ export function buildGistApiUrl(gistId) {
  *
  * 优先找约定文件名；找不到就退而在所有文件里找一个「看起来像载荷」的 ——
  * 你可能在网页上把文件重命名过，那时候不该整个同步就废掉。
+ *
+ * 占位内容会被当成「还没有数据」，这样界面能给出准确的提示，
+ * 而不是报一句「内容不是健康数据」让人以为哪里坏了。
  */
 export function extractGistContent(gist) {
   const files = (gist && gist.files) || {}
+
+  const isPlaceholder = (text) => String(text).trim() === GIST_PLACEHOLDER.trim()
+
   const named = files[GIST_FILENAME]
-  if (named && typeof named.content === 'string' && named.content.trim() !== '') {
-    return named.content
+  if (named && typeof named.content === 'string') {
+    const content = named.content
+    if (content.trim() !== '' && !isPlaceholder(content)) return content
+    return null
   }
+
   for (const file of Object.values(files)) {
-    if (file && typeof file.content === 'string' && looksLikeHealthPayload(file.content)) {
-      return file.content
-    }
+    if (!file || typeof file.content !== 'string') continue
+    if (isPlaceholder(file.content)) continue
+    if (looksLikeHealthPayload(file.content)) return file.content
   }
   return null
 }
