@@ -13,6 +13,8 @@ import {
   toNumberOrNull,
 } from '../core/food.js'
 import { withAmount, refreshEntrySnapshot, isEntryStale } from '../core/log.js'
+import * as healthSync from '../core/healthSync.js'
+import { freshness } from '../storage/dayRepo.js'
 import { fmtKcal, fmtGram, fmtAmount } from './format.js'
 import { dateLabel } from '../core/date.js'
 
@@ -190,7 +192,120 @@ export function openTargetsSheet({ targets, onSave }) {
   return overlay
 }
 
-/** 填写当日消耗。将来快捷指令同步写入的就是同一条记录。 */
+/** 健康数据同步设置与手动触发 */
+export function openSyncSheet({
+  sync,
+  health,
+  onSaveConfig,
+  onPullRelay,
+  onPullClipboard,
+  onClear,
+}) {
+  const { parseRelayConfig, formatRelayConfig } = healthSync
+  const configured = Boolean(sync && sync.endpoint && sync.token)
+  const configInput = h('textarea', {
+    class: 'paste-area',
+    rows: 3,
+    placeholder: '把部署脚本打印的那一整行粘到这里',
+    value: configured ? formatRelayConfig(sync) : '',
+  })
+
+  const statusLines = []
+  if (health && health.importedAt) {
+    const sourceLabel =
+      health.source === 'relay' ? '中继' : health.source === 'shortcut' ? '快捷指令（剪贴板）' : '手动填写'
+    statusLines.push(`上次同步：${freshness(health) || '刚刚'} · 来源：${sourceLabel}`)
+  } else {
+    statusLines.push('今天还没有消耗数据')
+  }
+  statusLines.push(
+    configured ? `中继已配置：${sync.endpoint}` : '中继未配置 —— 每次需要手动点一下读剪贴板',
+  )
+
+  const messages = h('div', { class: 'messages' })
+
+  function showError(message) {
+    messages.replaceChildren(h('p', { class: 'msg error' }, `✕ ${message}`))
+  }
+
+  async function save() {
+    const raw = configInput.value.trim()
+    if (raw === '') {
+      try {
+        await onSaveConfig({ endpoint: null, token: null })
+        overlay.remove()
+      } catch (error) {
+        showError(error.message)
+      }
+      return
+    }
+    const parsed = parseRelayConfig(raw)
+    if (!parsed || parsed.incomplete) {
+      showError('这行配置看不懂。应当是部署脚本打印的 carlories-relay:v1|…|… 那一整行。')
+      return
+    }
+    try {
+      await onSaveConfig({ endpoint: parsed.endpoint, token: parsed.token })
+      overlay.remove()
+    } catch (error) {
+      showError(error.message)
+    }
+  }
+
+  const overlay = sheet({
+    title: '健康数据同步',
+    body: [
+      h('div', { class: 'readout' },
+        h('div', { class: 'readout-name' }, configured ? '中继同步已开启' : '中继同步未开启'),
+        ...statusLines.map((line) => h('div', { class: 'readout-sub' }, line)),
+      ),
+
+      h('p', { class: 'hint' },
+        configured
+          ? '打开应用时会自动从中继拉取，不需要任何点击。中继上的数据保留 400 天，'
+            + '所以本地数据丢了也能补回来。'
+          : 'iOS 上网页读剪贴板必须由你点一下（系统限制），所以没有中继时每次都要手动同步。'
+            + '配好中继之后就不需要了。'),
+
+      configured
+        ? sheetButton('立即从服务器拉取', async () => {
+            await onPullRelay()
+            overlay.remove()
+          }, { primary: true })
+        : null,
+
+      configured
+        ? sheetButton('从剪贴板读取（兜底）', async () => {
+            await onPullClipboard()
+            overlay.remove()
+          })
+        : sheetButton('从剪贴板读取一次', async () => {
+            await onPullClipboard()
+            overlay.remove()
+          }, { primary: true }),
+
+      field('中继配置', configInput, null, { wrapLabel: true }),
+      sheetButton('保存配置', save, { primary: !configured }),
+      h('p', { class: 'hint' },
+        '清空这里并保存即可关闭中继。中继上存的是每天两个整数（活动能量、静息能量），'
+        + '口令在你自己的手机上。'),
+
+      health
+        ? sheetButton('清除今天的消耗数据', async () => {
+            await onClear()
+            overlay.remove()
+          }, { danger: true })
+        : null,
+
+      messages,
+    ],
+  })
+
+  openOverlay(overlay)
+  return overlay
+}
+
+/** 填写当日消耗。中继或剪贴板同步写入的就是同一条记录。 */
 export function openBurnSheet({ date, health, onSave, onClear }) {
   const activeInput = numberInput(health ? health.activeKcal : null, '健康 App 里的活动能量', 0)
   const restingInput = numberInput(health ? health.restingKcal : null, '健康 App 里的静息能量', 0)
