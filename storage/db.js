@@ -110,6 +110,22 @@ export async function getAllByIndex(storeName, indexName, value) {
   return requestToPromise(tx.objectStore(storeName).index(indexName).getAll(value))
 }
 
+/** 按主键区间取（含两端）。dayHealth 的主键就是日期，正好用来取一段日期 */
+export async function getAllByKeyRange(storeName, lower, upper) {
+  const db = await openDb()
+  const tx = db.transaction(storeName, 'readonly')
+  return requestToPromise(tx.objectStore(storeName).getAll(IDBKeyRange.bound(lower, upper)))
+}
+
+/** 按索引区间取（含两端）。用于一次取回一段日期内的全部记录，而不是逐天查 */
+export async function getAllByIndexRange(storeName, indexName, lower, upper) {
+  const db = await openDb()
+  const tx = db.transaction(storeName, 'readonly')
+  return requestToPromise(
+    tx.objectStore(storeName).index(indexName).getAll(IDBKeyRange.bound(lower, upper)),
+  )
+}
+
 export async function put(storeName, value) {
   const db = await openDb()
   const tx = db.transaction(storeName, 'readwrite')
