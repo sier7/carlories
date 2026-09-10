@@ -27,6 +27,26 @@ export const SOURCE_SHORTCUT = 'shortcut'
 /** 日期可以写字面量 TODAY，由应用解析成当天。见 parseHealthPayload 的说明 */
 export const TODAY_TOKEN = 'TODAY'
 
+/**
+ * 单位词。快捷指令把「计算统计」的结果插进「文本」动作时，可能带上单位后缀
+ * （`842.5 kcal`）。所以取值不能假设后面什么都没有。
+ */
+const KILOJOULE_UNITS = /^(kj|千焦|千焦耳|kilojoule|kilojoules)$/i
+const KCAL_UNITS = /^(kcal|cal|千卡|大卡|卡|卡路里|kilocalorie|kilocalories)$/i
+
+/**
+ * 从「数字 + 可选单位」里拆出数字。
+ *
+ * 数字部分必须**贪婪**匹配。用惰性量词会得到灾难性的结果：
+ *   "842" 会被拆成数字 8 + 单位 "42"
+ * 因为正则总是可以让数字部分尽量短、把剩下的都推给单位部分。
+ */
+function parseQuantity(text) {
+  const match = /^\s*(-?[\d][\d.,，]*)\s*(.*)$/.exec(String(text ?? ''))
+  if (!match) return { value: null, unit: '' }
+  return { value: toNumberOrNull(match[1]), unit: match[2].trim() }
+}
+
 /** 剪贴板里乱七八糟什么都有，先廉价地判断一下是不是我们的东西 */
 export function looksLikeHealthPayload(text) {
   return typeof text === 'string' && /^\s*CAL\//im.test(text)
@@ -98,17 +118,37 @@ export function parseHealthPayload(text, { today = null } = {}) {
       continue
     }
 
-    const kv = /^(ACT|RST)\s*[=:：]\s*(-?[\d.,，\s]+)$/i.exec(line)
+    const kv = /^(ACT|RST)\s*[=:：]\s*(.*)$/i.exec(line)
     if (kv) {
       if (!current) {
         problems.push(`「${line}」前面缺少 CAL/日期 这一行`)
         continue
       }
-      const value = toNumberOrNull(kv[2])
-      if (value === null || value < 0) {
-        problems.push(`「${line}」不是有效的热量值`)
+
+      const { value, unit } = parseQuantity(kv[2])
+      if (value === null) {
+        problems.push(`「${line}」里找不到数字`)
         continue
       }
+      if (value < 0) {
+        problems.push(`「${line}」是负数`)
+        continue
+      }
+      // 千焦比千卡大 4.184 倍。这是这套数据里最容易出错、也最难自己发现的
+      // 一种错 —— 数字看起来完全正常，只是整体偏大四倍。
+      if (KILOJOULE_UNITS.test(unit)) {
+        problems.push(
+          `「${line}」的单位看起来是千焦而不是千卡。`
+          + '去健康 App 里把能量单位改成「千卡」再同步一次 —— '
+          + '千焦的数字会比真实的卡路里大 4.184 倍。',
+        )
+        continue
+      }
+      if (unit !== '' && !KCAL_UNITS.test(unit)) {
+        // 数字仍然采用，但把多余内容说出来，免得悄悄丢掉信息
+        problems.push(`「${line}」数字后面有看不懂的内容「${unit}」，已按前面的数字处理`)
+      }
+
       if (kv[1].toUpperCase() === 'ACT') current.activeKcal = value
       else current.restingKcal = value
       continue
