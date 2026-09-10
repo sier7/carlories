@@ -396,6 +396,7 @@ group('今日页')
     openEntry: (e) => calls.push(['openEntry', e.id]),
     openTargets: () => calls.push(['openTargets']),
     openBurn: () => calls.push(['openBurn']),
+    syncHealth: () => calls.push(['syncHealth']),
   }
 
   const baseState = {
@@ -540,6 +541,15 @@ group('今日页')
     withoutHealth.querySelectorAll('.balance-row')[0].dispatch('click')
     assert.ok(calls.slice(before).some((c) => c[0] === 'openBurn'))
   })
+  check('没有消耗数据时给出一个明显的同步按钮', () =>
+    assert.equal(withoutHealth.querySelectorAll('.sync-cta').length, 1))
+  check('点同步按钮调用 syncHealth', () => {
+    const before = calls.length
+    withoutHealth.querySelectorAll('.sync-cta')[0].dispatch('click')
+    assert.ok(calls.slice(before).some((c) => c[0] === 'syncHealth'))
+  })
+  check('已经有消耗数据后不再显示那个按钮', () =>
+    assert.equal(full.querySelectorAll('.sync-cta').length, 0))
 
   group('今日页：外食那种「只填了热量」的记录')
   const beef = buildFreeEntry({
