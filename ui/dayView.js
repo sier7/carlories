@@ -5,7 +5,7 @@ import { dateLabel, relativeLabel } from '../core/date.js'
 import { summarizeEntries, isEntryStale, isFreeEntry, entryHasMacros } from '../core/log.js'
 import { totalBurn, describeBalance } from '../core/balance.js'
 import { round } from '../core/food.js'
-import { freshness, SOURCE_SHORTCUT } from '../storage/dayRepo.js'
+import { freshness, SOURCE_SHORTCUT, SOURCE_RELAY } from '../storage/dayRepo.js'
 import { fmtKcal, fmtGram, fmtAmount, percent } from './format.js'
 
 export function dayView(state, handlers) {
@@ -143,11 +143,14 @@ function macroRow(label, value, target) {
 
 // ── 消耗与净差 ──────────────────────────────────────────────────────────
 
+const SOURCE_LABEL = {
+  [SOURCE_SHORTCUT]: '来自快捷指令',
+  [SOURCE_RELAY]: '来自中继',
+}
+
 function balance(health, burn, dayBalance, handlers) {
   const sourceNote = health
-    ? health.source === SOURCE_SHORTCUT
-      ? `来自快捷指令 · ${freshness(health)}`
-      : `手动填写 · ${freshness(health)}`
+    ? `${SOURCE_LABEL[health.source] || '手动填写'} · ${freshness(health)}`
     : null
 
   const desc = describeBalance(dayBalance)
@@ -156,8 +159,8 @@ function balance(health, burn, dayBalance, handlers) {
     h('div', { class: 'section-head' },
       h('h3', null, '消耗与缺口'),
       h('button', {
-        class: 'icon-btn', type: 'button', onClick: handlers.syncHealth,
-      }, '同步健康数据'),
+        class: 'icon-btn', type: 'button', onClick: handlers.openSync,
+      }, '同步设置'),
     ),
 
     h('button', {
