@@ -822,6 +822,7 @@ group('健康数据同步：剪贴板载荷解析')
       extractGistContent,
       GIST_CONFIG_PREFIX,
       GIST_FILENAME,
+      GIST_PLACEHOLDER,
     } = await import('../app/core/healthSync.js')
 
     const ID = 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6'
@@ -851,6 +852,11 @@ group('健康数据同步：剪贴板载荷解析')
     })
     check('内容为空白时返回 null', () =>
       assert.equal(extractGistContent({ files: { [GIST_FILENAME]: { content: '  ' } } }), null))
+    check('★ 占位内容被当成「还没有数据」，而不是「内容不是健康数据」', () =>
+      assert.equal(
+        extractGistContent({ files: { [GIST_FILENAME]: { content: GIST_PLACEHOLDER } } }),
+        null,
+      ))
     check('没有 files 时返回 null，而不是崩', () => assert.equal(extractGistContent({}), null))
     check('完全不相干的文件返回 null', () =>
       assert.equal(extractGistContent({ files: { 'x.txt': { content: '随便什么' } } }), null))
