@@ -38,13 +38,14 @@ import {
   clearDayHealth,
   importHealthRecords,
   listDayHealthInRange,
-  SOURCE_RELAY,
+  SOURCE_MAILBOX,
 } from '../storage/dayRepo.js'
 import {
   parseHealthPayload,
   recordForDate,
   describeRecords,
-  buildRelayUrl,
+  buildGistApiUrl,
+  extractGistContent,
 } from '../core/healthSync.js'
 import { dayView } from './dayView.js'
 import { trendView } from './trendView.js'
@@ -124,10 +125,10 @@ async function maybeAutoSync() {
   const importedAt = state.health && state.health.importedAt
   const age = importedAt ? Date.now() - new Date(importedAt).getTime() : Infinity
 
-  if (relayConfigured()) {
-    // 中继是网络请求，不打扰人，可以勤快一点
-    if (age < 5 * 60 * 1000) return
-    await pullFromRelay({ silent: true })
+  if (gistConfigured()) {
+    // 走了 ETag，内容没变时 GitHub 返回 304 且不消耗配额，所以可以勤快一点
+    if (age < 2 * 60 * 1000) return
+    await pullFromGist({ silent: true })
     return
   }
 
@@ -136,78 +137,96 @@ async function maybeAutoSync() {
   await syncHealthFromClipboard({ silent: true })
 }
 
-function relayConfigured() {
-  return Boolean(state.sync && state.sync.endpoint && state.sync.token)
+function gistConfigured() {
+  return Boolean(state.sync && state.sync.gistId)
 }
 
-/** 有中继就用中继，没有就退回剪贴板 */
+/** 配了信箱就走信箱（不需要用户手势），否则退回剪贴板 */
 async function smartSync(options = {}) {
-  if (relayConfigured()) return pullFromRelay(options)
+  if (gistConfigured()) return pullFromGist(options)
   return syncHealthFromClipboard(options)
 }
 
 /**
- * 从中继拉取。
+ * ETag 缓存。
  *
- * 一次拉最近两周而不是只有今天 —— 中继上留着 400 天的数据，顺手补上
- * 中间漏掉的日子几乎不花代价，而本地数据万一丢了也能从这里补回来。
+ * GitHub 对「内容没变」的请求返回 304，而 **304 不计入**每小时 60 次的
+ * 匿名配额。所以反复打开应用几乎不消耗配额，也就没必要限流了。
  */
-async function pullFromRelay({ silent = false, days = 14 } = {}) {
-  if (!relayConfigured()) {
-    if (!silent) toast('还没有配置中继。点「同步设置」粘贴配置串。', 'error')
+let gistEtag = null
+
+/**
+ * 从 Gist 信箱拉取。
+ *
+ * 读一个公开 Gist **不需要任何凭据** —— 写入用的 token 只存在于快捷指令里，
+ * 不进这个应用。这也是选 Gist 而不是普通仓库文件的原因之一。
+ */
+async function pullFromGist({ silent = false, force = false } = {}) {
+  if (!gistConfigured()) {
+    if (!silent) toast('还没有配置信箱。点「同步设置」粘贴 Gist 地址。', 'error')
     return { ok: false, reason: 'not-configured' }
   }
 
-  const to = dateKey()
-  const from = addDays(to, -(days - 1))
+  const headers = { accept: 'application/vnd.github+json' }
+  if (!force && gistEtag) headers['if-none-match'] = gistEtag
 
   let response
   try {
-    response = await fetch(buildRelayUrl(state.sync.endpoint, from, to), {
-      headers: { authorization: `Bearer ${state.sync.token}` },
-      cache: 'no-store',
-    })
+    response = await fetch(buildGistApiUrl(state.sync.gistId), { headers, cache: 'no-store' })
   } catch (error) {
-    if (!silent) toast(`连不上中继：${error.message}`, 'error')
+    if (!silent) toast(`连不上 GitHub：${error.message}`, 'error')
     return { ok: false, reason: 'network' }
   }
 
-  if (response.status === 401) {
-    if (!silent) toast('中继拒绝了：口令不对。重新粘贴一次配置串。', 'error')
-    return { ok: false, reason: 'unauthorized' }
+  if (response.status === 304) return { ok: true, unchanged: true }
+
+  if (response.status === 404) {
+    if (!silent) toast('找不到这个 Gist。检查地址里那串 ID 对不对。', 'error')
+    return { ok: false, reason: 'not-found' }
+  }
+  if (response.status === 403 || response.status === 429) {
+    if (!silent) toast('GitHub 接口限流了。等几分钟再试。', 'error')
+    return { ok: false, reason: 'rate-limited' }
   }
   if (!response.ok) {
-    if (!silent) toast(`中继返回 ${response.status}`, 'error')
+    if (!silent) toast(`GitHub 返回 ${response.status}`, 'error')
     return { ok: false, reason: 'http', status: response.status }
   }
+
+  const etag = response.headers.get('etag')
+  if (etag) gistEtag = etag
 
   let body = null
   try {
     body = await response.json()
   } catch {
-    if (!silent) toast('中继返回的不是 JSON', 'error')
+    if (!silent) toast('信箱返回的不是 JSON', 'error')
     return { ok: false, reason: 'bad-body' }
   }
 
-  const records = (body && Array.isArray(body.records) ? body.records : []).map((record) => ({
-    ...record,
-    source: SOURCE_RELAY,
-  }))
-
-  if (records.length === 0) {
-    if (!silent) toast('中继上还没有数据。先在手机上跑一次快捷指令。')
+  const content = extractGistContent(body)
+  if (!content) {
+    if (!silent) toast('信箱里还没有内容。先在手机上跑一次快捷指令。')
     return { ok: false, reason: 'empty' }
   }
 
+  const { records, problems } = parseHealthPayload(content, { today: dateKey() })
+  if (records.length === 0) {
+    if (!silent) toast(problems[0] || '信箱里的内容看不懂', 'error')
+    return { ok: false, reason: 'unparsable', problems }
+  }
+
   try {
-    const written = await importHealthRecords(records)
+    await importHealthRecords(records.map((record) => ({ ...record, source: SOURCE_MAILBOX })))
     await refresh()
-    toast(`已从中继同步 ${written.length} 天`)
-    return { ok: true, count: written.length }
   } catch (error) {
     if (!silent) toast(`写入失败：${error.message}`, 'error')
     return { ok: false, reason: 'write-failed' }
   }
+
+  const mine = recordForDate(records, state.date)
+  toast(mine ? `已同步 ${describeRecords([mine])}` : `已同步 ${describeRecords(records)}`)
+  return { ok: true, count: records.length }
 }
 
 /**
@@ -535,7 +554,7 @@ function openSyncEditor() {
       await refresh()
       toast(config.endpoint ? '中继已配置，下次打开应用会自动同步' : '中继已关闭')
     },
-    onPullRelay: () => pullFromRelay({}),
+    onPullGist: (options) => pullFromGist(options || {}),
     onPullClipboard: () => syncHealthFromClipboard({}),
     onClear: async () => {
       await clearDayHealth(state.date)
