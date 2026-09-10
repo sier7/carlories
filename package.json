@@ -10,13 +10,12 @@
     "icons": "node tools/make-icons.mjs",
     "deploy": "node tools/deploy.mjs",
     "deploy:check": "node tools/deploy.mjs --check",
-    "deploy:worker": "node tools/deploy-worker.mjs",
+    "setup:gist": "node tools/setup-gist.mjs",
     "verify": "node tools/verify-site.mjs",
-    "test": "node tools/test-core.mjs && node tools/test-ui-smoke.mjs && node tools/test-worker.mjs && node tools/test-deploy.mjs && node tools/test-deploy-worker.mjs",
+    "test": "node tools/test-core.mjs && node tools/test-ui-smoke.mjs && node tools/test-deploy.mjs && node tools/test-setup-gist.mjs",
     "test:core": "node tools/test-core.mjs",
     "test:ui": "node tools/test-ui-smoke.mjs",
-    "test:worker": "node tools/test-worker.mjs",
     "test:deploy": "node tools/test-deploy.mjs",
-    "test:deploy:worker": "node tools/test-deploy-worker.mjs"
+    "test:gist": "node tools/test-setup-gist.mjs"
   }
 }
