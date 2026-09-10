@@ -5,13 +5,22 @@
  * 所以按 date 索引查，而不是全量取回再过滤。
  */
 
-import { getAll, getAllByIndex, put, remove, count } from './db.js'
+import { getAll, getAllByIndex, getAllByIndexRange, put, remove, count } from './db.js'
 import { createLogEntry, sortEntries, validateEntry } from '../core/log.js'
 
 const STORE = 'logs'
 
 export async function listEntriesForDate(date) {
   const rows = await getAllByIndex(STORE, 'byDate', date)
+  return sortEntries(rows)
+}
+
+/**
+ * 一段日期内的全部记录，一次查回。
+ * 逐天查的话，90 天就是 90 次事务 —— 趋势页每次切换区间都要跑一遍。
+ */
+export async function listEntriesInRange(from, to) {
+  const rows = await getAllByIndexRange(STORE, 'byDate', from, to)
   return sortEntries(rows)
 }
 
