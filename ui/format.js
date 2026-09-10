@@ -21,6 +21,18 @@ export function fmtDelta(value) {
   return (r > 0 ? '+' : '−') + Math.abs(r).toLocaleString('zh-CN')
 }
 
+/**
+ * 缺口值：正的直接写，负的带减号。
+ *
+ * 与 fmtDelta 的区别是不给正数加「+」。在列标题已经写着「缺口」的表格里，
+ * 一列「+600 / +350 / +700」里的加号是纯噪音，而负号是有信息量的。
+ */
+export function fmtBalance(value) {
+  if (typeof value !== 'number' || !isFinite(value)) return '—'
+  const r = Math.round(value)
+  return r < 0 ? `−${Math.abs(r).toLocaleString('zh-CN')}` : r.toLocaleString('zh-CN')
+}
+
 /** 份量的显示文案：150 g / 1.5 份 */
 export function fmtAmount(amount, unit) {
   const n = round(amount, 2)
