@@ -262,6 +262,13 @@ const documentRoot = new Node('#document')
 
 const documentStub = {
   createElement: (tag) => new Node(tag),
+  // SVG 必须走 createElementNS。用 createElement('path') 建出来的东西
+  // 能进 DOM 但不渲染，而且不报错。
+  createElementNS: (namespace, tag) => {
+    const node = new Node(tag)
+    node.namespaceURI = namespace
+    return node
+  },
   createTextNode: (text) => textNode(text),
   getElementById: (id) => documentRoot.querySelector(`[id="${id}"]`),
   querySelector: (sel) => documentRoot.querySelector(sel),
@@ -288,6 +295,8 @@ group('模块链接：每个模块都能被解析并加载')
     '../app/core/log.js',
     '../app/core/date.js',
     '../app/core/history.js',
+    '../app/core/healthSync.js',
+    '../app/core/balance.js',
     '../app/storage/db.js',
     '../app/storage/foodRepo.js',
     '../app/storage/logRepo.js',
@@ -296,11 +305,13 @@ group('模块链接：每个模块都能被解析并加载')
     '../app/ui/dom.js',
     '../app/ui/widgets.js',
     '../app/ui/format.js',
+    '../app/ui/chart.js',
     '../app/ui/foodForm.js',
     '../app/ui/freeEntryForm.js',
     '../app/ui/sheets.js',
     '../app/ui/foodPicker.js',
     '../app/ui/dayView.js',
+    '../app/ui/trendView.js',
     '../app/ui/libraryView.js',
     '../app/ui/main.js',
   ]
@@ -412,7 +423,7 @@ group('今日页')
   })
   check('没有消耗数据时显示「未填写」并给出说明', () => {
     assert.ok(textNoHealth.includes('未填写'))
-    assert.ok(textNoHealth.includes('净差'))
+    assert.ok(textNoHealth.includes('消耗与缺口'))
   })
   check('没设目标时不渲染进度条', () => {
     assert.equal(withoutHealth.querySelectorAll('.macro-bar').length, 0)
@@ -436,11 +447,16 @@ group('今日页')
   check('消耗 = 800 + 1650 = 2450 kcal', () => {
     assert.ok(textFull.includes(fmtKcal(2450)), `实际：${textFull.slice(0, 400)}`)
   })
-  check('净差 = 403 − 2450 = −2047', () => {
-    assert.ok(textFull.includes(fmtDelta(-2047)), `实际：${textFull.slice(0, 400)}`)
+  check('缺口 = 2450 − 403 = 2047', () => {
+    assert.ok(textFull.includes('缺口'), `实际：${textFull.slice(0, 400)}`)
+    assert.ok(textFull.includes(fmtKcal(2047)), `实际：${textFull.slice(0, 400)}`)
   })
-  check('净差为负时标注为赤字', () => {
-    assert.ok(textFull.includes('赤字'))
+  check('摄入超过消耗时改称盈余', () => {
+    const over = dayView(
+      { ...baseState, health: { ...health, activeKcal: 100, restingKcal: 200 } },
+      handlers,
+    )
+    assert.ok(over.textContent.includes('盈余'), `实际：${over.textContent.slice(0, 400)}`)
   })
   check('设了目标就渲染三条进度条', () => {
     assert.equal(full.querySelectorAll('.macro-bar').length, 3)
@@ -978,6 +994,181 @@ group('手动填写：外食不需要先建档案')
     const labels = overlay.querySelectorAll('button').map((b) => b.textContent)
     assert.ok(!labels.includes('删除'), `实际：${labels.join(',')}`)
     overlay.remove()
+  })
+}
+
+group('图表几何：坐标算错是最难肉眼发现的一类 bug')
+{
+  const {
+    scaleLinear,
+    computeYScale,
+    slotLayout,
+    buildSegments,
+    toPathData,
+    toAreaData,
+    labelIndices,
+    balanceClass,
+  } = await import('../app/ui/chart.js')
+
+  check('线性映射', () => assert.equal(scaleLinear(5, 0, 10, 0, 100), 50))
+  check('映射到反向区间（SVG 的 y 轴朝下）', () => assert.equal(scaleLinear(0, 0, 10, 100, 0), 100))
+  check('domain 相同时不除零，返回中点', () => assert.equal(scaleLinear(3, 3, 3, 0, 100), 50))
+
+  const scale = computeYScale([0, 500, 1000], { height: 100, padding: 10 })
+  check('最大值贴到上边界', () => assert.equal(scale.y(1000), 10))
+  check('0 贴到下边界', () => assert.equal(scale.y(0), 90))
+  check('中间值居中', () => assert.equal(scale.y(500), 50))
+
+  const mixed = computeYScale([-500, 500], { height: 100, padding: 0 })
+  check('有正有负时 0 落在正中', () => assert.equal(mixed.y(0), 50))
+  check('负数画在 0 下方（屏幕坐标更大）', () => assert.ok(mixed.y(-500) > mixed.y(0)))
+
+  check('全是 0 时也能得到有效范围，不出现 NaN', () => {
+    const s = computeYScale([0], { height: 100, padding: 10, minSpan: 200 })
+    assert.ok(isFinite(s.y(0)))
+  })
+  check('空数组不崩', () => assert.ok(isFinite(computeYScale([], { height: 100 }).y(0))))
+
+  const layout = slotLayout(4, 400)
+  check('4 个槽位每个 100 宽', () => assert.equal(layout.slotWidth, 100))
+  check('第一个槽位中心', () => assert.equal(layout.center(0), 50))
+  check('最后一个槽位中心', () => assert.equal(layout.center(3), 350))
+  check('柱子不越界', () => {
+    assert.ok(layout.left(0) >= 0)
+    assert.ok(layout.left(3) + layout.barWidth <= 400)
+  })
+  check('0 个数据不除零', () => assert.ok(isFinite(slotLayout(0, 400).slotWidth)))
+
+  group('缺失值必须让折线断开，而不是连起来')
+  const segs = buildSegments([1, 2, null, 4, 5], { x: (i) => i * 10, y: (v) => v })
+  check('断成两段', () => assert.equal(segs.length, 2))
+  check('第一段两个点', () => assert.equal(segs[0].length, 2))
+  check('第二段两个点', () => assert.equal(segs[1].length, 2))
+  check('全是 null → 一段都没有', () =>
+    assert.equal(buildSegments([null, null], { x: () => 0, y: () => 0 }).length, 0))
+  check('孤立的一个点也成段（否则它在图上完全不可见）', () =>
+    assert.equal(buildSegments([null, 5, null], { x: () => 0, y: () => 0 }).length, 1))
+
+  group('path 生成')
+  check('以 M 开头', () => assert.ok(toPathData([{ x: 0, y: 0 }, { x: 10, y: 10 }]).startsWith('M0,0')))
+  check('第二个点用 L', () => assert.equal(toPathData([{ x: 0, y: 0 }, { x: 10, y: 10 }]), 'M0,0 L10,10'))
+  check('空输入返回空串，不产生非法 path', () => assert.equal(toPathData([]), ''))
+  check('面积路径闭合到基线', () => {
+    const d = toAreaData([{ x: 0, y: 10 }, { x: 20, y: 5 }], 100)
+    assert.ok(d.endsWith('Z'))
+    assert.ok(d.includes('L20,100'))
+  })
+
+  group('横轴标签密度')
+  check('7 天全部标出', () => assert.deepEqual(labelIndices(7, 7), [0, 1, 2, 3, 4, 5, 6]))
+  check('90 天稀疏标注', () => assert.ok(labelIndices(90, 6).length <= 8))
+  check('无论如何最后一个点一定带标签（否则看不出区间到哪天为止）', () => {
+    const idx = labelIndices(90, 6)
+    assert.equal(idx[idx.length - 1], 89)
+  })
+  check('0 天返回空', () => assert.deepEqual(labelIndices(0), []))
+
+  group('缺口正负的颜色归类')
+  check('正 → 缺口', () => assert.equal(balanceClass(500), 'deficit'))
+  check('负 → 盈余', () => assert.equal(balanceClass(-500), 'surplus'))
+  check('零 → 持平', () => assert.equal(balanceClass(0), 'even'))
+  check('缺失 → missing', () => assert.equal(balanceClass(null), 'missing'))
+}
+
+group('多日视图：只摆数据，不做判断')
+{
+  const { trendView, RANGE_OPTIONS } = await import('../app/ui/trendView.js')
+  const { buildDailyBalances, summarizeRange } = await import('../app/core/balance.js')
+  const { fmtKcal } = await import('../app/ui/format.js')
+
+  const days = buildDailyBalances({
+    from: '2026-10-01',
+    to: '2026-10-05',
+    totalsByDate: new Map([
+      ['2026-10-01', { energyKcal: 2100, proteinG: 140 }],
+      ['2026-10-02', { energyKcal: 2000, proteinG: 150 }],
+      ['2026-10-03', { energyKcal: 2200, proteinG: 130 }],
+      // 10-04 完全没有记录
+      ['2026-10-05', { energyKcal: 1900, proteinG: 145 }],
+    ]),
+    burnByDate: new Map([
+      ['2026-10-01', 2700], ['2026-10-02', 2650], ['2026-10-03', 2750], ['2026-10-05', 2600],
+    ]),
+  })
+  const summary = summarizeRange(days)
+  const node = trendView({ rangeDays: 7, summary, targets: null }, { setRange: () => {} })
+  const text = node.textContent
+
+  check('累计缺口 = 600 + 650 + 550 + 700 = 2500', () =>
+    assert.ok(text.includes(fmtKcal(2500)), `实际：${text.slice(0, 300)}`))
+  check('折算成脂肪公斤', () => assert.ok(text.includes('kg 脂肪')))
+  check('日均缺口 625（绝对值，不带符号噪音）', () =>
+    assert.ok(text.includes('625'), `实际：${text.slice(0, 300)}`))
+  check('说出数据完整度：完整 4 / 5 天', () =>
+    assert.ok(text.includes('完整 4 / 5 天'), `实际：${text.slice(0, 400)}`))
+  check('说明累计只统计完整的天', () => assert.ok(text.includes('只统计完整的天')))
+  check('缺数据那天的明细标「数据不全」而不是算成 0', () =>
+    assert.ok(text.includes('数据不全')))
+
+  check('两个图都用 SVG 命名空间创建（用 createElement 会静默不渲染）', () => {
+    const svgs = node.querySelectorAll('svg')
+    assert.equal(svgs.length, 2)
+    assert.ok(svgs.every((svg) => svg.namespaceURI === 'http://www.w3.org/2000/svg'))
+  })
+  check('每日对比图有摄入与消耗两组柱子', () => {
+    assert.ok(node.querySelectorAll('.bar.intake').length >= 4, '摄入柱不足')
+    assert.ok(node.querySelectorAll('.bar.burn').length >= 4, '消耗柱不足')
+  })
+  check('完全没数据的那天画一条淡底座，让「这里缺数据」可见', () =>
+    assert.equal(node.querySelectorAll('.bar.empty').length, 1))
+  check('累计缺口图在缺失处断开 —— 两段而不是连成一条平线', () =>
+    assert.equal(node.querySelectorAll('.line').length, 2))
+  check('区间按钮是 7/14/30/90', () => {
+    const labels = node.querySelectorAll('.range-tab').map((b) => b.textContent)
+    assert.deepEqual(labels, RANGE_OPTIONS.map((d) => `${d} 天`))
+  })
+  check('当前区间被标为选中', () => {
+    const active = node.querySelectorAll('.range-tab').filter((b) => b.classList.contains('active'))
+    assert.equal(active.length, 1)
+    assert.equal(active[0].textContent, '7 天')
+  })
+  check('点区间按钮把天数交出去', () => {
+    let got = null
+    const n = trendView({ rangeDays: 7, summary, targets: null }, { setRange: (d) => (got = d) })
+    n.querySelectorAll('.range-tab')[2].dispatch('click')
+    assert.equal(got, 30)
+  })
+
+  check('★ 没有任何「替你判断」的文案', () => {
+    for (const word of ['建议', '应该', '注意', '健康分', '偏大', '未达标', '波动', '健康']) {
+      assert.ok(!text.includes(word), `出现了「${word}」：${text.slice(0, 400)}`)
+    }
+  })
+
+  check('盈余区间用「盈余」而不是「缺口」', () => {
+    const surplusDays = buildDailyBalances({
+      from: '2026-10-01', to: '2026-10-03',
+      totalsByDate: new Map(['01', '02', '03'].map((d) => [`2026-10-${d}`, { energyKcal: 3000 }])),
+      burnByDate: new Map(['01', '02', '03'].map((d) => [`2026-10-${d}`, 2500])),
+    })
+    const n = trendView({ rangeDays: 7, summary: summarizeRange(surplusDays), targets: null }, { setRange: () => {} })
+    assert.ok(n.textContent.includes('累计盈余'), `实际：${n.textContent.slice(0, 300)}`)
+    assert.ok(n.textContent.includes('日均盈余'))
+  })
+
+  check('全部完整时不出现警告样式', () => {
+    const clean = buildDailyBalances({
+      from: '2026-10-01', to: '2026-10-03',
+      totalsByDate: new Map(['01', '02', '03'].map((d) => [`2026-10-${d}`, { energyKcal: 2000 }])),
+      burnByDate: new Map(['01', '02', '03'].map((d) => [`2026-10-${d}`, 2600])),
+    })
+    const n = trendView({ rangeDays: 7, summary: summarizeRange(clean), targets: null }, { setRange: () => {} })
+    assert.equal(n.querySelectorAll('.data-note.ok').length, 1)
+  })
+
+  check('还没加载时显示载入中而不是崩', () => {
+    const n = trendView({ rangeDays: 7, summary: null, targets: null }, { setRange: () => {} })
+    assert.ok(n.textContent.includes('载入中'))
   })
 }
 
