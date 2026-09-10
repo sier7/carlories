@@ -21,11 +21,13 @@ const DEFAULTS = {
     fatG: null,
     carbG: null,
   },
-  // 中继（见 worker/index.js）。配置好之后应用打开时直接拉取，
-  // 不需要读剪贴板，也就不需要任何点击。
+  // Gist 信箱（见 core/healthSync.js 与 docs/自动同步.md）。
+  // 配置好之后应用打开时直接从 Gist 拉取，不需要读剪贴板，也就不需要点击。
+  //
+  // 注意这里**只有 gistId，没有口令** —— 读一个公开 Gist 不需要任何凭据，
+  // 所以写入用的 token 只存在于快捷指令里，不进这个应用。
   sync: {
-    endpoint: null,
-    token: null,
+    gistId: null,
   },
 }
 
@@ -52,19 +54,13 @@ export async function saveSettings(patch) {
   return merged
 }
 
-/** 保存中继配置。地址为空即视为关闭中继。 */
-export async function saveSyncConfig({ endpoint, token }) {
-  const cleanEndpoint = endpoint ? String(endpoint).trim().replace(/\/+$/, '') : null
-  const cleanToken = token ? String(token).trim() : null
-
-  if (cleanEndpoint && !/^https?:\/\//i.test(cleanEndpoint)) {
-    throw new Error('中继地址要以 http:// 或 https:// 开头')
+/** 保存 Gist 信箱。gistId 为空即视为关闭。 */
+export async function saveSyncConfig({ gistId }) {
+  const clean = gistId ? String(gistId).trim() : null
+  if (clean && !/^[0-9a-f]{5,64}$/i.test(clean)) {
+    throw new Error('Gist ID 看起来不对（它是一串十六进制字符）')
   }
-  if (cleanEndpoint && !cleanToken) {
-    throw new Error('填了地址就要填口令，否则中继会拒绝')
-  }
-
-  return saveSettings({ sync: { endpoint: cleanEndpoint, token: cleanToken } })
+  return saveSettings({ sync: { gistId: clean } })
 }
 
 export async function saveTargets(targets) {
