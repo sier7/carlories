@@ -794,6 +794,134 @@ group('健康数据同步：剪贴板载荷解析')
   check('没有数据时摘要不为空', describeRecords([]), '没有可用数据')
 }
 
+// ── 热量缺口与饮食模式 ──────────────────────────────────────────────────
+
+group('热量缺口：单日、累计、以及折算成体重变化')
+{
+  const {
+    totalBurn,
+    dayBalance,
+    buildDailyBalances,
+    dailyNutrients,
+    burnByDate,
+    summarizeRange,
+    describeBalance,
+    cumulativeSeries,
+    KCAL_PER_KG_FAT,
+  } = await import('../app/core/balance.js')
+  const { buildEntryFromFood, buildFreeEntry, entryNutrients } = await import('../app/core/log.js')
+
+  group('总消耗')
+  check('活动 + 静息', totalBurn({ activeKcal: 800, restingKcal: 1650 }), 2450)
+  check('只有活动（表没戴满一天）', totalBurn({ activeKcal: 800, restingKcal: null }), 800)
+  check('两项都缺 → null，而不是 0（0 会被当成「一整天没消耗」）', totalBurn({ activeKcal: null, restingKcal: null }), null)
+  check('没有记录 → null', totalBurn(null), null)
+
+  group('单日缺口：符号约定是「消耗 − 摄入」')
+  const def = dayBalance({ date: '2026-10-03', totals: { energyKcal: 2000, proteinG: 120 }, burn: 2600 })
+  check('摄入 2000、消耗 2600 → 缺口 600（正数）', def.balance, 600)
+  check('这一天是完整的', def.complete, true)
+
+  const sur = dayBalance({ date: '2026-10-03', totals: { energyKcal: 3200, proteinG: 150 }, burn: 2600 })
+  check('摄入 3200、消耗 2600 → 盈余 600（负数）', sur.balance, -600)
+
+  const noBurn = dayBalance({ date: '2026-10-03', totals: { energyKcal: 2000 }, burn: null })
+  check('缺消耗 → 不完整，且缺口为 null 而不是硬算', [noBurn.complete, noBurn.balance], [false, null])
+  check('原因标为缺消耗', noBurn.reason, 'no-burn')
+
+  const noIntake = dayBalance({ date: '2026-10-03', totals: null, burn: 2600 })
+  check('缺饮食 → 不完整', [noIntake.complete, noIntake.reason], [false, 'no-intake'])
+
+  const empty = dayBalance({ date: '2026-10-03', totals: null, burn: null })
+  check('两者都缺 → empty', empty.reason, 'empty')
+
+  group('按天汇总摄入：和当天页走同一条计算路径')
+  const egg = createFood({
+    name: '鸡蛋（全蛋）', basis: { type: 'per100g' }, state: 'raw',
+    energyKcal: 143, proteinG: 13, fatG: 9, carbG: 1,
+  })
+  const entries = [
+    buildEntryFromFood({ food: egg, amount: 100, unit: 'g', date: '2026-10-03', time: '08:00' }),
+    buildEntryFromFood({ food: egg, amount: 200, unit: 'g', date: '2026-10-03', time: '12:00' }),
+    buildFreeEntry({ name: '外食', energyKcal: 700, proteinG: 30, date: '2026-10-04', time: '12:00' }),
+  ]
+  const totals = dailyNutrients(entries, entryNutrients)
+  checkApprox('同一天的两条记录被加在一起（143 + 286）', totals.get('2026-10-03').energyKcal, 429)
+  checkApprox('蛋白质也累加（13 + 26）', totals.get('2026-10-03').proteinG, 39)
+  check('另一天单独统计', totals.get('2026-10-04').energyKcal, 700)
+
+  group('★ 累计缺口只算完整的日子')
+  {
+    const days = buildDailyBalances({
+      from: '2026-10-01',
+      to: '2026-10-04',
+      totalsByDate: new Map([
+        ['2026-10-01', { energyKcal: 2000, proteinG: 130 }],
+        // 10-02 只记了早餐就忘了晚饭 —— 这是最危险的情况
+        ['2026-10-02', { energyKcal: 300, proteinG: 20 }],
+        ['2026-10-03', { energyKcal: 2100, proteinG: 140 }],
+        ['2026-10-04', { energyKcal: 1900, proteinG: 125 }],
+      ]),
+      burnByDate: new Map([
+        ['2026-10-01', 2600],
+        ['2026-10-02', 2550],
+        ['2026-10-03', 2650],
+        // 10-04 没有消耗数据
+      ]),
+    })
+
+    check('生成了 4 天', days.length, 4)
+
+    const summary = summarizeRange(days)
+    check('完整 3 天', summary.completeDays, 3)
+    check('1 天缺消耗', summary.missingBurnDays, 1)
+    check('缺消耗那天不计入（否则它会凭空贡献 1900 的假缺口）',
+      [days[3].complete, days[3].balance], [false, null])
+    checkApprox('累计摄入只含 3 天', summary.totalIntake, 2000 + 300 + 2100)
+    checkApprox('累计消耗只含 3 天', summary.totalBurn, 2600 + 2550 + 2650)
+    checkApprox('累计缺口', summary.totalBalance, (2600 - 2000) + (2550 - 300) + (2650 - 2100))
+    checkApprox('日均缺口按完整天数算', summary.averageBalance, summary.totalBalance / 3)
+    checkApprox('折算脂肪公斤', summary.fatKg, summary.totalBalance / KCAL_PER_KG_FAT)
+
+    check('标出摄入偏低的那天（可能是漏记，但不擅自排除）', summary.lowIntakeDays, 1)
+    check('这一天仍然被计入累计', days[1].complete, true)
+  }
+
+  group('区间边界')
+  const oneDay = buildDailyBalances({ from: '2026-10-03', to: '2026-10-03', totalsByDate: new Map(), burnByDate: new Map() })
+  check('起止同一天 → 1 天', oneDay.length, 1)
+  check('起止倒置 → 空数组，而不是崩溃或负数天', buildDailyBalances({ from: '2026-10-05', to: '2026-10-01', totalsByDate: new Map(), burnByDate: new Map() }).length, 0)
+
+  group('给人看的说法')
+  check('缺口', describeBalance(600), { kind: 'deficit', label: '缺口', value: 600 })
+  check('盈余', describeBalance(-600), { kind: 'surplus', label: '盈余', value: 600 })
+  check('持平', describeBalance(0), { kind: 'even', label: '持平', value: 0 })
+  check('四舍五入到整数', describeBalance(0.4).value, 0)
+  check('数据不全', describeBalance(null).kind, 'unknown')
+
+  group('逐日累计走势')
+  {
+    const { cumulativeSeries } = await import('../app/core/balance.js')
+    const days = buildDailyBalances({
+      from: '2026-10-01', to: '2026-10-04',
+      totalsByDate: new Map([
+        ['2026-10-01', { energyKcal: 2000 }],
+        ['2026-10-03', { energyKcal: 2000 }],
+        ['2026-10-04', { energyKcal: 2000 }],
+      ]),
+      burnByDate: new Map([
+        ['2026-10-01', 2500], ['2026-10-02', 2500], ['2026-10-03', 2500], ['2026-10-04', 2500],
+      ]),
+    })
+    const series = cumulativeSeries(days)
+    check('第 1 天累计 500', series[0], 500)
+    check('第 2 天没有数据 → null（不是沿用 500，那会画成一条平线）', series[1], null)
+    check('第 3 天接着往回累计（1000）', series[2], 1000)
+    check('第 4 天 1500', series[3], 1500)
+    check('空输入返回空数组', cumulativeSeries([]), [])
+  }
+}
+
 // ── 结果 ────────────────────────────────────────────────────────────────
 
 console.log(`\n${'─'.repeat(52)}`)
