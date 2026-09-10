@@ -6,8 +6,13 @@ function applyProps(node, props) {
   if (!props) return
   for (const [key, value] of Object.entries(props)) {
     if (value === null || value === undefined || value === false) continue
-    if (key === 'class') node.className = value
-    else if (key === 'dataset') Object.assign(node.dataset, value)
+    if (key === 'class') {
+      // SVGElement.className 是**只读**的 SVGAnimatedString，赋值在严格模式下
+      // 直接抛 TypeError；而 HTML 元素反过来，必须用 className 才能同步 classList。
+      // 这两种元素的处理方式不能混。
+      if (node.namespaceURI === SVG_NS) node.setAttribute('class', String(value))
+      else node.className = value
+    } else if (key === 'dataset') Object.assign(node.dataset, value)
     else if (key === 'style' && typeof value === 'object') Object.assign(node.style, value)
     else if (key.startsWith('on') && typeof value === 'function') {
       node.addEventListener(key.slice(2).toLowerCase(), value)
