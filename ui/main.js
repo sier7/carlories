@@ -92,6 +92,34 @@ async function refresh() {
   }
   state.loading = false
   render()
+  maybeAutoSync()
+}
+
+// ── 自动同步尝试 ────────────────────────────────────────────────────────
+
+let autoSyncAttempted = false
+
+/**
+ * 打开应用时自己试着读一次剪贴板。
+ *
+ * 目标是省掉一次点击。**但它很可能失败** —— iOS 上 navigator.clipboard.readText()
+ * 需要用户手势，而页面加载本身不算手势。所以这里是尽力而为：
+ * 成功就静默导入，失败就什么也不做，把「同步健康数据」那个按钮留给用户。
+ *
+ * 只在数据缺失或超过 30 分钟时才试，免得每次打开都弹一个粘贴确认。
+ */
+async function maybeAutoSync() {
+  if (autoSyncAttempted) return
+  autoSyncAttempted = true
+
+  if (state.tab !== 'day') return
+  if (typeof navigator === 'undefined' || !navigator.clipboard) return
+
+  const importedAt = state.health && state.health.importedAt
+  const age = importedAt ? Date.now() - new Date(importedAt).getTime() : Infinity
+  if (age < 30 * 60 * 1000) return
+
+  await syncHealthFromClipboard({ silent: true })
 }
 
 /**
@@ -218,40 +246,46 @@ const handlers = {
  * 剪贴板 API 需要 HTTPS 安全上下文，且 iOS 会弹一次粘贴确认 ——
  * 所以这里必须准备好失败路径，而不是假设它总能成功。
  */
-async function syncHealthFromClipboard() {
+async function syncHealthFromClipboard({ silent = false } = {}) {
   const clipboard = typeof navigator !== 'undefined' ? navigator.clipboard : null
   if (!clipboard || typeof clipboard.readText !== 'function') {
-    toast('这台设备不能读剪贴板，请点「消耗」那一行手动填', 'error')
-    return
+    if (!silent) toast('这台设备不能读剪贴板，请点「消耗」那一行手动填', 'error')
+    return { ok: false, reason: 'unsupported' }
   }
 
   let text = ''
   try {
     text = await clipboard.readText()
   } catch {
-    toast(
-      '读不到剪贴板。可能是粘贴权限被拒，或者页面不在 HTTPS 下。'
-      + '也可以点「消耗」那一行手动填。',
-      'error',
-    )
-    return
+    // 自动尝试时这里失败是正常的（没有用户手势）。不打扰用户，
+    // 界面上的按钮会兜住。
+    if (!silent) {
+      toast(
+        '读不到剪贴板。可能是粘贴权限被拒，或者页面不在 HTTPS 下。'
+        + '也可以点「消耗」那一行手动填。',
+        'error',
+      )
+    }
+    return { ok: false, reason: 'denied' }
   }
 
   const { records, problems } = parseHealthPayload(text, { today: dateKey() })
   if (records.length === 0) {
-    toast(
-      problems[0] || '剪贴板里没有健康数据。先在「快捷指令」里运行「同步到 Carlories」。',
-      'error',
-    )
-    return
+    if (!silent) {
+      toast(
+        problems[0] || '剪贴板里没有健康数据。先在「快捷指令」里运行「同步到 Carlories」。',
+        'error',
+      )
+    }
+    return { ok: false, reason: 'no-data', problems }
   }
 
   try {
     await importHealthRecords(records)
     await refresh()
   } catch (error) {
-    toast(`写入失败：${error.message}`, 'error')
-    return
+    if (!silent) toast(`写入失败：${error.message}`, 'error')
+    return { ok: false, reason: 'write-failed' }
   }
 
   const mine = recordForDate(records, state.date)
@@ -260,6 +294,7 @@ async function syncHealthFromClipboard() {
   } else {
     toast(`已同步 ${describeRecords(records)}（都不是 ${state.date}，已按各自日期存入）`)
   }
+  return { ok: true, records }
 }
 
 // ── 记录：三个来源 ──────────────────────────────────────────────────────
