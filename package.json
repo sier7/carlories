@@ -10,6 +10,7 @@
     "icons": "node tools/make-icons.mjs",
     "deploy": "node tools/deploy.mjs",
     "deploy:check": "node tools/deploy.mjs --check",
+    "verify": "node tools/verify-site.mjs",
     "test": "node tools/test-core.mjs && node tools/test-ui-smoke.mjs && node tools/test-deploy.mjs",
     "test:core": "node tools/test-core.mjs",
     "test:ui": "node tools/test-ui-smoke.mjs",
