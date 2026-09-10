@@ -8,8 +8,12 @@
  * 日期是主键，所以同一天重复导入天然幂等 —— 不会重复累加。
  */
 
-import { get, put, remove } from './db.js'
+import { get, put, remove, getAllByKeyRange } from './db.js'
 import { toNumberOrNull } from '../core/food.js'
+
+// totalBurn 是领域逻辑，定义在 core 里。这里转出去只是为了方便调用方 —— 
+// storage 依赖 core 是对的，反过来不是。
+export { totalBurn } from '../core/balance.js'
 
 const STORE = 'dayHealth'
 
@@ -18,6 +22,11 @@ export const SOURCE_SHORTCUT = 'shortcut'
 
 export async function getDayHealth(date) {
   return (await get(STORE, date)) || null
+}
+
+/** 一段日期内的消耗数据。主键就是日期，所以直接用主键区间取 */
+export async function listDayHealthInRange(from, to) {
+  return getAllByKeyRange(STORE, from, to)
 }
 
 export async function setDayHealth(date, { activeKcal, restingKcal, source = SOURCE_MANUAL }) {
@@ -63,15 +72,6 @@ export async function importHealthRecords(records) {
     if (saved) written.push(saved)
   }
   return written
-}
-
-/** 总消耗 = 活动 + 静息。缺哪一项就按 0 计，不猜。 */
-export function totalBurn(record) {
-  if (!record) return null
-  const active = record.activeKcal
-  const resting = record.restingKcal
-  if (active === null && resting === null) return null
-  return (active || 0) + (resting || 0)
 }
 
 /** 数据新鲜度：用于在界面上说明这个消耗数字有多旧，而不是假装它是实时的 */
