@@ -9,7 +9,9 @@
  * 不需要等网络，也不会因为网络慢而卡在加载中。
  */
 
-const CACHE = 'carlories-v1'
+// 版本号变了会在 activate 时清掉旧缓存，强制所有文件重新拉一遍。
+// 改动 SW 的预缓存清单或改动大量文件时，顺手把它 +1。
+const CACHE = 'carlories-v2'
 
 const SHELL = [
   './',
