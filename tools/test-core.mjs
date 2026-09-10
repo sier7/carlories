@@ -742,6 +742,46 @@ group('健康数据同步：剪贴板载荷解析')
     2,
   )
 
+  group('单位后缀：快捷指令插进来的值可能不是纯数字')
+  check('带 kcal 后缀', parseHealthPayload('CAL/2026-10-03\nACT=842 kcal').records[0].activeKcal, 842)
+  check('带千卡后缀', parseHealthPayload('CAL/2026-10-03\nRST=1710 千卡').records[0].restingKcal, 1710)
+  check('小数', parseHealthPayload('CAL/2026-10-03\nACT=842.53').records[0].activeKcal, 842.53)
+  check('小数+单位', parseHealthPayload('CAL/2026-10-03\nACT=842.53 kcal').records[0].activeKcal, 842.53)
+  check('数字与单位之间没空格', parseHealthPayload('CAL/2026-10-03\nACT=842kcal').records[0].activeKcal, 842)
+  check('带千分位与单位', parseHealthPayload('CAL/2026-10-03\nACT=1,842 kcal').records[0].activeKcal, 1842)
+
+  // 这一条是防回归：惰性量词会让 "842" 变成 数字 8 + 单位 "42"，
+  // 于是每一次真实同步的数字都错得离谱，而且看起来毫无异常。
+  check('多位数不能被拆散（842 必须是 842，不是 8）', () => {
+    const r = parseHealthPayload('CAL/2026-10-03\nACT=842\nRST=1710')
+    assert.equal(r.records[0].activeKcal, 842)
+    assert.equal(r.records[0].restingKcal, 1710)
+  })
+
+  check(
+    '千焦被拦下（大 4.184 倍，且数字看起来很合理，最难自己发现）',
+    parseHealthPayload('CAL/2026-10-03\nACT=3525 kJ').records.length,
+    0,
+  )
+  check(
+    '并且说明该怎么办',
+    parseHealthPayload('CAL/2026-10-03\nACT=3525 kJ').problems.some((p) => p.includes('千卡')),
+    true,
+  )
+  check(
+    '中文「千焦」同样拦下',
+    parseHealthPayload('CAL/2026-10-03\nACT=3525 千焦').records.length,
+    0,
+  )
+  check(
+    '看不懂的后缀会被说出来，但数字仍然采用',
+    (() => {
+      const r = parseHealthPayload('CAL/2026-10-03\nACT=842 什么鬼')
+      return r.records.length === 1 && r.records[0].activeKcal === 842 && r.problems.length === 1
+    })(),
+    true,
+  )
+
   group('格式识别与回写')
   check('认得出自己的载荷', looksLikeHealthPayload('  \nCAL/2026-10-03'), true)
   check('不会把别的文本误认成载荷', looksLikeHealthPayload('CALORIES 800'), false)
