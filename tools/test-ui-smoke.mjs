@@ -559,12 +559,12 @@ group('今日页')
     button.dispatch('click')
     assert.ok(calls.slice(before).some((c) => c[0] === 'openSync'))
   })
-  check('消耗来源标为「来自中继」而不是「手动填写」', () => {
-    const relay = dayView(
-      { ...baseState, health: { ...health, source: 'relay' } },
+  check('消耗来源标为「来自信箱」而不是「手动填写」', () => {
+    const mailbox = dayView(
+      { ...baseState, health: { ...health, source: 'mailbox' } },
       handlers,
     )
-    assert.ok(relay.textContent.includes('来自中继'), `实际：${relay.textContent.slice(0, 300)}`)
+    assert.ok(mailbox.textContent.includes('来自信箱'), `实际：${mailbox.textContent.slice(0, 300)}`)
   })
 
   group('今日页：外食那种「只填了热量」的记录')
@@ -1201,49 +1201,45 @@ group('多日视图：只摆数据，不做判断')
 group('健康数据同步设置')
 {
   const { openSyncSheet } = await import('../app/ui/sheets.js')
+  const { formatGistConfig } = await import('../app/core/healthSync.js')
 
   const noop = async () => {}
-  const base = { onSaveConfig: noop, onPullRelay: noop, onPullClipboard: noop, onClear: noop }
+  const base = { onSaveConfig: noop, onPullGist: noop, onPullClipboard: noop, onClear: noop }
+  const GIST = 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6'
 
-  check('未配置中继时说明为什么需要点击，并且不给「拉取」按钮', () => {
-    const overlay = openSyncSheet({ ...base, sync: { endpoint: null, token: null }, health: null })
+  check('未配置信箱时说明为什么需要点击，并且不给「拉取」按钮', () => {
+    const overlay = openSyncSheet({ ...base, sync: { gistId: null }, health: null })
     const text = overlay.textContent
-    assert.ok(text.includes('中继同步未开启'), `实际：${text.slice(0, 200)}`)
+    assert.ok(text.includes('自动同步未开启'), `实际：${text.slice(0, 200)}`)
     assert.ok(text.includes('系统限制'))
-    assert.ok(!text.includes('立即从服务器拉取'))
+    assert.ok(!text.includes('立即拉取一次'))
     overlay.remove()
   })
 
-  check('已配置中继时显示地址与来源', () => {
+  check('已配置信箱时显示状态与来源', () => {
     const overlay = openSyncSheet({
       ...base,
-      sync: { endpoint: 'https://relay.example.workers.dev', token: 'tok123' },
+      sync: { gistId: GIST },
       health: {
         date: '2026-10-03', activeKcal: 800, restingKcal: 1700,
-        source: 'relay', importedAt: new Date().toISOString(),
+        source: 'mailbox', importedAt: new Date().toISOString(),
       },
     })
     const text = overlay.textContent
-    assert.ok(text.includes('中继同步已开启'))
-    assert.ok(text.includes('relay.example.workers.dev'))
-    assert.ok(text.includes('来源：中继'), `实际：${text.slice(0, 300)}`)
-    assert.ok(text.includes('立即从服务器拉取'))
+    assert.ok(text.includes('自动同步已开启'))
+    assert.ok(text.includes('来源：信箱'), `实际：${text.slice(0, 300)}`)
+    assert.ok(text.includes('立即拉取一次'))
     overlay.remove()
   })
 
   check('配置框预填当前配置，方便核对', () => {
-    const overlay = openSyncSheet({
-      ...base,
-      sync: { endpoint: 'https://relay.example.workers.dev', token: 'tok123' },
-      health: null,
-    })
-    const area = overlay.querySelector('.paste-area')
-    assert.ok(area.value.startsWith('carlories-relay:v1|'), `实际：${area.value}`)
+    const overlay = openSyncSheet({ ...base, sync: { gistId: GIST }, health: null })
+    assert.ok(overlay.querySelector('.paste-area').value.startsWith('carlories-gist:v1|'))
     overlay.remove()
   })
 
   check('★ 面板里有「保存配置」按钮（否则粘进去也白粘）', () => {
-    const overlay = openSyncSheet({ ...base, sync: { endpoint: null, token: null }, health: null })
+    const overlay = openSyncSheet({ ...base, sync: { gistId: null }, health: null })
     const labels = overlay.querySelectorAll('button').map((b) => b.textContent)
     assert.ok(labels.includes('保存配置'), `实际：${labels.join(',')}`)
     overlay.remove()
@@ -1254,45 +1250,56 @@ group('健康数据同步设置')
     const overlay = openSyncSheet({
       ...base,
       onSaveConfig: async (c) => { saved = c },
-      sync: { endpoint: null, token: null },
+      sync: { gistId: null },
       health: null,
     })
     overlay.querySelector('.paste-area').value = '乱七八糟的东西'
     overlay.clickByText('保存配置')
     assert.equal(saved, null, '不该把看不懂的内容存下去')
-    assert.ok(overlay.querySelector('.messages').textContent.includes('carlories-relay:v1'))
+    assert.ok(overlay.querySelector('.messages').textContent.includes('Gist'))
     overlay.remove()
   })
 
-  check('粘贴合法配置串时把地址与口令拆开交出去', async () => {
+  check('粘贴 gist 网址时只把 id 交出去（不把整条网址存进去）', async () => {
     let saved = null
     const overlay = openSyncSheet({
       ...base,
       onSaveConfig: async (c) => { saved = c },
-      sync: { endpoint: null, token: null },
+      sync: { gistId: null },
       health: null,
     })
-    overlay.querySelector('.paste-area').value =
-      'carlories-relay:v1|https://relay.example.workers.dev|tok123'
+    overlay.querySelector('.paste-area').value = `https://gist.github.com/sier7/${GIST}`
     overlay.clickByText('保存配置')
     await tick()
-    assert.ok(saved, 'onSaveConfig 未被调用')
-    assert.equal(saved.endpoint, 'https://relay.example.workers.dev')
-    assert.equal(saved.token, 'tok123')
+    assert.deepEqual(saved, { gistId: GIST })
   })
 
-  check('清空配置框保存即关闭中继', async () => {
+  check('粘贴部署脚本打印的配置串也可以', async () => {
     let saved = null
     const overlay = openSyncSheet({
       ...base,
       onSaveConfig: async (c) => { saved = c },
-      sync: { endpoint: 'https://relay.example.workers.dev', token: 'tok123' },
+      sync: { gistId: null },
+      health: null,
+    })
+    overlay.querySelector('.paste-area').value = formatGistConfig(GIST)
+    overlay.clickByText('保存配置')
+    await tick()
+    assert.deepEqual(saved, { gistId: GIST })
+  })
+
+  check('清空配置框保存即关闭自动同步', async () => {
+    let saved = null
+    const overlay = openSyncSheet({
+      ...base,
+      onSaveConfig: async (c) => { saved = c },
+      sync: { gistId: GIST },
       health: null,
     })
     overlay.querySelector('.paste-area').value = ''
     overlay.clickByText('保存配置')
     await tick()
-    assert.deepEqual(saved, { endpoint: null, token: null })
+    assert.deepEqual(saved, { gistId: null })
   })
 }
 
