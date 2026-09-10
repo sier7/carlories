@@ -3,15 +3,18 @@
 import { h } from './dom.js'
 import { dateLabel, relativeLabel } from '../core/date.js'
 import { summarizeEntries, isEntryStale, isFreeEntry, entryHasMacros } from '../core/log.js'
+import { totalBurn, describeBalance } from '../core/balance.js'
 import { round } from '../core/food.js'
-import { totalBurn, freshness, SOURCE_SHORTCUT } from '../storage/dayRepo.js'
-import { fmtKcal, fmtGram, fmtDelta, fmtAmount, percent } from './format.js'
+import { freshness, SOURCE_SHORTCUT } from '../storage/dayRepo.js'
+import { fmtKcal, fmtGram, fmtAmount, percent } from './format.js'
 
 export function dayView(state, handlers) {
   const { date, today, entries, health, targets, foods } = state
   const { items, totals } = summarizeEntries(entries)
   const burn = totalBurn(health)
-  const delta = burn === null ? null : totals.energyKcal - burn
+  // 缺口 = 消耗 − 摄入，正数是缺口。与多日视图用同一个函数，
+  // 避免两处各写一套符号约定然后对不上。
+  const dayBalance = burn === null ? null : burn - totals.energyKcal
   const foodsById = new Map(foods.map((f) => [f.id, f]))
   const staleCount = items.filter((i) => isEntryStale(i.entry, foodsById.get(i.entry.refId))).length
   const missingMacros = items.filter((i) => !entryHasMacros(i.entry)).length
@@ -20,7 +23,7 @@ export function dayView(state, handlers) {
     dateNav(date, today, handlers),
     hero(date, today, totals, entries.length, targets),
     macros(totals, targets, handlers, missingMacros),
-    balance(health, burn, delta, handlers),
+    balance(health, burn, dayBalance, handlers),
     h('button', {
       class: 'btn primary wide record-btn',
       type: 'button',
@@ -140,16 +143,18 @@ function macroRow(label, value, target) {
 
 // ── 消耗与净差 ──────────────────────────────────────────────────────────
 
-function balance(health, burn, delta, handlers) {
+function balance(health, burn, dayBalance, handlers) {
   const sourceNote = health
     ? health.source === SOURCE_SHORTCUT
       ? `来自快捷指令 · ${freshness(health)}`
       : `手动填写 · ${freshness(health)}`
     : null
 
+  const desc = describeBalance(dayBalance)
+
   return h('section', { class: 'balance' },
     h('div', { class: 'section-head' },
-      h('h3', null, '消耗与净差'),
+      h('h3', null, '消耗与缺口'),
       h('button', {
         class: 'icon-btn', type: 'button', onClick: handlers.syncHealth,
       }, '同步健康数据'),
@@ -170,11 +175,9 @@ function balance(health, burn, delta, handlers) {
           '点「同步健康数据」会从剪贴板读入快捷指令刚刚放进去的活动能量与静息能量。'
           + '还没装快捷指令的话，也可以点上面那一行手动填。')
       : h('div', { class: 'balance-row net' },
-          h('span', { class: 'balance-name' }, '净差'),
-          h('span', {
-            class: `balance-value ${delta < 0 ? 'deficit' : delta > 0 ? 'surplus' : ''}`,
-          }, `${fmtDelta(delta)} kcal`),
-          h('span', { class: 'balance-tag' }, delta < 0 ? '赤字' : delta > 0 ? '盈余' : '持平'),
+          h('span', { class: 'balance-name' }, desc.label),
+          h('span', { class: `balance-value ${desc.kind}` },
+            desc.value === null ? '—' : `${fmtKcal(desc.value)} kcal`),
         ),
   )
 }
