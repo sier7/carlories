@@ -707,7 +707,7 @@ group('健康数据同步：剪贴板载荷解析')
   check('多余空行不影响', parseHealthPayload('\n\nCAL/2026-10-03\n\nACT=842\n\n').records.length, 1)
 
   group('坏输入：说清楚坏在哪，而不是崩或者静默吞掉')
-  check('空剪贴板', parseHealthPayload('').problems[0], '剪贴板是空的')
+  check('空内容', parseHealthPayload('').problems[0], '内容是空的')
   check('不是健康数据时点名格式', parseHealthPayload('随便什么东西').problems[0].includes('CAL/'), true)
   check('缺日期行时报错', parseHealthPayload('ACT=842').problems.length > 0, true)
   check('负数被拒绝', parseHealthPayload('CAL/2026-10-03\nACT=-5').records.length, 0)
@@ -782,47 +782,78 @@ group('健康数据同步：剪贴板载荷解析')
     true,
   )
 
-  group('中继配置串：让手机上只需粘贴一次，而不用敲 32 位口令')
+  group('单行载荷：让快捷指令用一个「文本」动作就能拼出请求体')
   {
-    const {
-      parseRelayConfig,
-      formatRelayConfig,
-      normalizeEndpoint,
-      buildRelayUrl,
-      RELAY_CONFIG_PREFIX,
-    } = await import('../app/core/healthSync.js')
+    const single = parseHealthPayload('CAL/TODAY ACT=842 RST=1710', { today: '2026-10-03' })
+    check('单行也能解析', single.records.length, 1)
+    check('日期来自 TODAY', single.records[0].date, '2026-10-03')
+    check('活动能量', single.records[0].activeKcal, 842)
+    check('静息能量', single.records[0].restingKcal, 1710)
+    check('没有报错', single.problems, [])
 
-    const sample = `${RELAY_CONFIG_PREFIX}https://carlories-relay.abc.workers.dev|s3cretToken_-abc123`
-    const parsed = parseRelayConfig(sample)
+    check('单行 + 多行混排也能解析', () =>
+      parseHealthPayload('CAL/2026-10-02 ACT=900 RST=1690\nCAL/2026-10-03 ACT=842 RST=1710')
+        .records.length)
 
-    check('解析出地址', parsed.endpoint, 'https://carlories-relay.abc.workers.dev')
-    check('解析出口令', parsed.token, 's3cretToken_-abc123')
-    check('标记为完整', parsed.incomplete, false)
-    check('往返一致', formatRelayConfig(parsed), sample)
-
-    check('容忍前后空白与换行', parseRelayConfig(`\n  ${sample}  \n`).token, 's3cretToken_-abc123')
-    check('地址末尾的斜杠被去掉', parseRelayConfig(
-      `${RELAY_CONFIG_PREFIX}https://x.workers.dev/|tok`,
-    ).endpoint, 'https://x.workers.dev')
-
-    check('只粘一个地址时也认得，但标为不完整', parseRelayConfig('https://x.workers.dev').incomplete, true)
-    check('只有地址时没有口令', parseRelayConfig('https://x.workers.dev').token, null)
-
-    check('乱七八糟的文本 → null', parseRelayConfig('随便什么东西'), null)
-    check('空串 → null', parseRelayConfig(''), null)
-    check('前缀对但没有分隔符 → null', parseRelayConfig(`${RELAY_CONFIG_PREFIX}abc`), null)
-    check('地址不是 http(s) → null', parseRelayConfig(`${RELAY_CONFIG_PREFIX}ftp://x|tok`), null)
-    check('口令为空 → null', parseRelayConfig(`${RELAY_CONFIG_PREFIX}https://x.workers.dev|`), null)
-
-    check('口令里含竖线时按最后一个竖线切分（base64url 不会含，但防御一下）', () => {
-      const r = parseRelayConfig(`${RELAY_CONFIG_PREFIX}https://x.workers.dev|a|b`)
-      assert.equal(r.endpoint, 'https://x.workers.dev|a')
-      assert.equal(r.token, 'b')
+    // 这一条是防回归：值后面的空白如果用了 \s，它会把换行也吃进去，
+    // 于是「单位」那一组会吞掉下一行的键 —— ACT=842\nRST=1710 被读成
+    // 「值 842、单位 RST」。而多行正是剪贴板路径的唯一形态。
+    check('★ 多行时值后面的换行不能被当成单位', () => {
+      const r = parseHealthPayload('CAL/2026-10-03\nACT=842\nRST=1710')
+      assert.equal(r.records[0].activeKcal, 842)
+      assert.equal(r.records[0].restingKcal, 1710)
+      assert.deepEqual(r.problems, [])
     })
 
-    check('normalizeEndpoint 去掉尾部斜杠', normalizeEndpoint('https://x.dev///'), 'https://x.dev')
-    check('拉取地址带上区间', buildRelayUrl('https://x.dev/', '2026-10-01', '2026-10-03'),
-      'https://x.dev/days?from=2026-10-01&to=2026-10-03')
+    check('单行带单位', () =>
+      parseHealthPayload('CAL/TODAY ACT=842 kcal RST=1710 kcal', { today: '2026-10-03' })
+        .records[0].activeKcal)
+
+    check('单行里夹着看不懂的内容会被报出来', () =>
+      parseHealthPayload('CAL/TODAY ACT=842 什么鬼 RST=1', { today: '2026-10-03' }).problems.length > 0)
+  }
+
+  group('Gist 信箱配置：口令只留在快捷指令里，不进应用')
+  {
+    const {
+      parseGistConfig,
+      formatGistConfig,
+      buildGistApiUrl,
+      extractGistContent,
+      GIST_CONFIG_PREFIX,
+      GIST_FILENAME,
+    } = await import('../app/core/healthSync.js')
+
+    const ID = 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6'
+
+    check('解析脚本打印的配置串', parseGistConfig(`${GIST_CONFIG_PREFIX}${ID}`).gistId, ID)
+    check('解析完整的 gist 网址', parseGistConfig(`https://gist.github.com/sier7/${ID}`).gistId, ID)
+    check('解析不带用户名的 gist 网址', parseGistConfig(`https://gist.github.com/${ID}`).gistId, ID)
+    check('光一个 id 也认', parseGistConfig(ID).gistId, ID)
+    check('容忍前后空白与换行', parseGistConfig(`\n  ${ID}  \n`).gistId, ID)
+    check('容忍网址后面的锚点', parseGistConfig(`https://gist.github.com/sier7/${ID}#file-x`).gistId, ID)
+    check('往返一致', formatGistConfig(ID), `${GIST_CONFIG_PREFIX}${ID}`)
+
+    check('不是十六进制的 → null（避免把随便什么粘进去）', parseGistConfig('这不是一个 id'), null)
+    check('太短的 → null', parseGistConfig('abc'), null)
+    check('空串 → null', parseGistConfig(''), null)
+    check('api 地址正确', buildGistApiUrl(ID), `https://api.github.com/gists/${ID}`)
+
+    group('从 API 响应里取载荷')
+    check('按约定文件名取', () =>
+      assert.equal(
+        extractGistContent({ files: { [GIST_FILENAME]: { content: 'CAL/TODAY ACT=1 RST=2' } } }),
+        'CAL/TODAY ACT=1 RST=2',
+      ))
+    check('文件被改过名时退而找一个像载荷的（不该整个同步就废掉）', () => {
+      const gist = { files: { '笔记.md': { content: 'CAL/TODAY ACT=5 RST=6' } } }
+      assert.equal(extractGistContent(gist), 'CAL/TODAY ACT=5 RST=6')
+    })
+    check('内容为空白时返回 null', () =>
+      assert.equal(extractGistContent({ files: { [GIST_FILENAME]: { content: '  ' } } }), null))
+    check('没有 files 时返回 null，而不是崩', () => assert.equal(extractGistContent({}), null))
+    check('完全不相干的文件返回 null', () =>
+      assert.equal(extractGistContent({ files: { 'x.txt': { content: '随便什么' } } }), null))
   }
 
   group('格式识别与回写')
