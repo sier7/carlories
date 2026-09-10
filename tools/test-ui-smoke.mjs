@@ -1216,8 +1216,7 @@ group('健康数据同步设置')
     overlay.remove()
   })
 
-  check('已配置信箱时显示状态与来源', () => {
-    const overlay = openSyncSheet({
+  check('已配置信箱时显示状态与来源', () => {    const overlay = openSyncSheet({
       ...base,
       sync: { gistId: GIST },
       health: {
