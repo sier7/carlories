@@ -23,7 +23,12 @@ import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
-import { GIST_FILENAME, formatGistConfig } from '../app/core/healthSync.js'
+import {
+  GIST_FILENAME,
+  GIST_PLACEHOLDER,
+  extractGistContent,
+  formatGistConfig,
+} from '../app/core/healthSync.js'
 
 export const DEFAULT_API = 'https://api.github.com'
 export const GIST_DESCRIPTION = 'Carlories 健康数据信箱（应用只读，写入靠快捷指令）'
@@ -32,8 +37,13 @@ const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const TOKEN_FILE = join(ROOT, '.github-gist-token')
 const ID_FILE = join(ROOT, '.gist-id')
 
-/** 初始内容用空白：它不该被解析成数据，应用会提示「信箱里还没有内容」 */
-const INITIAL_CONTENT = '\n'
+/**
+ * 初始内容。
+ *
+ * **不能为空或纯空白** —— GitHub 会以 422 拒绝没有内容的文件。
+ * 也不能是任何像载荷的东西，否则应用会把它当数据读进去。
+ */
+const INITIAL_CONTENT = GIST_PLACEHOLDER
 
 export function createClient({ token, apiBase = DEFAULT_API }) {
   async function call(method, path, body) {
@@ -58,8 +68,16 @@ export function createClient({ token, apiBase = DEFAULT_API }) {
     }
 
     if (!response.ok) {
+      // GitHub 的 422 会把具体是哪个字段不合法放在 errors 里，只打印 message
+      // 只会得到一句没用的「Validation Failed」。
+      const details = json && Array.isArray(json.errors) && json.errors.length > 0
+        ? json.errors
+            .map((e) => [e.resource, e.field, e.code].filter(Boolean).join('.'))
+            .join('; ')
+        : null
       const error = new Error(
-        `${method} ${path} → ${response.status} ${json && json.message ? json.message : ''}`,
+        `${method} ${path} → ${response.status} `
+        + `${(json && json.message) || ''}${details ? `（${details}）` : ''}`,
       )
       error.status = response.status
       error.payload = json
@@ -113,6 +131,27 @@ export async function runSetupGist({
 
   const configString = formatGistConfig(gistId)
   const url = `https://gist.github.com/${user.login}/${gistId}`
+
+  // 关键验证：应用是**不带任何凭据**去读这个 Gist 的。如果匿名读不到，
+  // 整个方案就是假的 —— 所以这里就用和浏览器一模一样的方式读一次。
+  log('\n验证匿名读取（应用就是这样读的，不带 token）…')
+  try {
+    const anonymous = await fetch(`${apiBase}/gists/${gistId}`, {
+      headers: { accept: 'application/vnd.github+json', 'user-agent': 'carlories-setup-gist' },
+    })
+    if (anonymous.ok) {
+      const payload = await anonymous.json()
+      const content = extractGistContent(payload)
+      log(content
+        ? '  读到了内容'
+        : '  读得到（目前是占位符，所以应用会显示「还没有内容」，这是对的）')
+    } else {
+      log(`  ⚠ 匿名读取失败：HTTP ${anonymous.status}`)
+      log('  这个信箱多半是公开的而不是秘密的，或者被限制了。应用可能读不到。')
+    }
+  } catch (error) {
+    log(`  ⚠ 匿名读取出错：${error.message}`)
+  }
 
   log(`
 ${'─'.repeat(62)}
@@ -195,6 +234,25 @@ if (isMainModule()) {
       console.error('token 权限不足。确认它勾选了 gist。')
       console.error('（注意：repo 权限**不包含** gist，这两个是分开的。）')
     }
+    printTlsHint(error)
     process.exit(1)
   })
+}
+
+/**
+ * 这台机器上 github 域名被 hosts 指到了本地代理，而 Node 默认不读 Windows
+ * 证书库，于是报一个跟真实原因毫无关系的「fetch failed」。把这个坑直接说出来。
+ */
+export function printTlsHint(error) {
+  const message = `${error && error.message} ${(error && error.cause && error.cause.message) || ''}`
+  if (!/fetch failed|certificate|UNABLE_TO_VERIFY/i.test(message)) return
+  console.error(`
+提示：这是证书问题，不是网络不通。
+
+这台机器的 hosts 把 github 域名指到了本地代理，代理用自己的证书做中间人；
+而 Node 默认只用自带的 CA 库，不读 Windows 证书库。加一个参数即可：
+
+  node --use-system-ca tools/setup-gist.mjs
+
+（或者用 npm run setup:gist —— 那个脚本里已经带上了这个参数。）`)
 }
