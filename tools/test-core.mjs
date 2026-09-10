@@ -782,6 +782,49 @@ group('健康数据同步：剪贴板载荷解析')
     true,
   )
 
+  group('中继配置串：让手机上只需粘贴一次，而不用敲 32 位口令')
+  {
+    const {
+      parseRelayConfig,
+      formatRelayConfig,
+      normalizeEndpoint,
+      buildRelayUrl,
+      RELAY_CONFIG_PREFIX,
+    } = await import('../app/core/healthSync.js')
+
+    const sample = `${RELAY_CONFIG_PREFIX}https://carlories-relay.abc.workers.dev|s3cretToken_-abc123`
+    const parsed = parseRelayConfig(sample)
+
+    check('解析出地址', parsed.endpoint, 'https://carlories-relay.abc.workers.dev')
+    check('解析出口令', parsed.token, 's3cretToken_-abc123')
+    check('标记为完整', parsed.incomplete, false)
+    check('往返一致', formatRelayConfig(parsed), sample)
+
+    check('容忍前后空白与换行', parseRelayConfig(`\n  ${sample}  \n`).token, 's3cretToken_-abc123')
+    check('地址末尾的斜杠被去掉', parseRelayConfig(
+      `${RELAY_CONFIG_PREFIX}https://x.workers.dev/|tok`,
+    ).endpoint, 'https://x.workers.dev')
+
+    check('只粘一个地址时也认得，但标为不完整', parseRelayConfig('https://x.workers.dev').incomplete, true)
+    check('只有地址时没有口令', parseRelayConfig('https://x.workers.dev').token, null)
+
+    check('乱七八糟的文本 → null', parseRelayConfig('随便什么东西'), null)
+    check('空串 → null', parseRelayConfig(''), null)
+    check('前缀对但没有分隔符 → null', parseRelayConfig(`${RELAY_CONFIG_PREFIX}abc`), null)
+    check('地址不是 http(s) → null', parseRelayConfig(`${RELAY_CONFIG_PREFIX}ftp://x|tok`), null)
+    check('口令为空 → null', parseRelayConfig(`${RELAY_CONFIG_PREFIX}https://x.workers.dev|`), null)
+
+    check('口令里含竖线时按最后一个竖线切分（base64url 不会含，但防御一下）', () => {
+      const r = parseRelayConfig(`${RELAY_CONFIG_PREFIX}https://x.workers.dev|a|b`)
+      assert.equal(r.endpoint, 'https://x.workers.dev|a')
+      assert.equal(r.token, 'b')
+    })
+
+    check('normalizeEndpoint 去掉尾部斜杠', normalizeEndpoint('https://x.dev///'), 'https://x.dev')
+    check('拉取地址带上区间', buildRelayUrl('https://x.dev/', '2026-10-01', '2026-10-03'),
+      'https://x.dev/days?from=2026-10-01&to=2026-10-03')
+  }
+
   group('格式识别与回写')
   check('认得出自己的载荷', looksLikeHealthPayload('  \nCAL/2026-10-03'), true)
   check('不会把别的文本误认成载荷', looksLikeHealthPayload('CALORIES 800'), false)
