@@ -11,8 +11,9 @@
 
 import { h, mount } from './dom.js'
 import { dateKey, addDays, timeKey } from '../core/date.js'
-import { createLogEntry, snapshotFromFood, isFreeEntry } from '../core/log.js'
+import { createLogEntry, snapshotFromFood, isFreeEntry, entryNutrients } from '../core/log.js'
 import { buildHistoryIndex, resolveHistory } from '../core/history.js'
+import { buildDailyBalances, dailyNutrients, burnByDate, summarizeRange } from '../core/balance.js'
 import { BASIS_PER_SERVING } from '../core/food.js'
 import {
   listFoods,
@@ -25,6 +26,7 @@ import {
 } from '../storage/foodRepo.js'
 import {
   listEntriesForDate,
+  listEntriesInRange,
   listRecentEntries,
   saveEntry,
   deleteEntry,
@@ -35,9 +37,11 @@ import {
   setDayHealth,
   clearDayHealth,
   importHealthRecords,
+  listDayHealthInRange,
 } from '../storage/dayRepo.js'
 import { parseHealthPayload, recordForDate, describeRecords } from '../core/healthSync.js'
 import { dayView } from './dayView.js'
+import { trendView } from './trendView.js'
 import { libraryView } from './libraryView.js'
 import { createFoodForm } from './foodForm.js'
 import { openFoodPicker } from './foodPicker.js'
@@ -58,6 +62,8 @@ const state = {
   health: null,
   targets: null,
   query: '',
+  rangeDays: 7,
+  summary: null,
 }
 
 init()
@@ -77,6 +83,9 @@ async function refresh() {
       state.entries = await listEntriesForDate(state.date)
       state.health = await getDayHealth(state.date)
     }
+    if (state.tab === 'trend') {
+      await loadRange()
+    }
     state.error = null
   } catch (error) {
     state.error = error.message || String(error)
@@ -85,12 +94,38 @@ async function refresh() {
   render()
 }
 
+/**
+ * 加载多日区间。
+ *
+ * 一次查回整段区间的记录，而不是逐天查 —— 90 天逐天查就是 90 次事务，
+ * 而每次切换区间都要重来一遍。
+ */
+async function loadRange() {
+  const to = dateKey()
+  const from = addDays(to, -(state.rangeDays - 1))
+
+  const [entries, healthRecords] = await Promise.all([
+    listEntriesInRange(from, to),
+    listDayHealthInRange(from, to),
+  ])
+
+  const days = buildDailyBalances({
+    from,
+    to,
+    totalsByDate: dailyNutrients(entries, entryNutrients),
+    burnByDate: burnByDate(healthRecords),
+  })
+  state.summary = summarizeRange(days)
+}
+
 function render() {
   mount(root, h('div', { class: 'app' },
     state.error ? h('p', { class: 'msg error' }, `出错了：${state.error}`) : null,
     state.tab === 'day'
       ? dayView(state, handlers)
-      : libraryView(state, handlers),
+      : state.tab === 'trend'
+        ? trendView(state, handlers)
+        : libraryView(state, handlers),
     tabBar(),
   ))
 }
@@ -98,6 +133,7 @@ function render() {
 function tabBar() {
   const tabs = [
     { id: 'day', label: '今日', icon: '◉' },
+    { id: 'trend', label: '多日', icon: '◫' },
     { id: 'library', label: '食物库', icon: '☰' },
   ]
   return h('nav', { class: 'tabbar' },
@@ -120,6 +156,14 @@ const handlers = {
   setTab(tab) {
     if (state.tab === tab) return
     state.tab = tab
+    if (tab === 'trend') state.summary = null
+    refresh()
+  },
+
+  setRange(days) {
+    if (state.rangeDays === days) return
+    state.rangeDays = days
+    state.summary = null
     refresh()
   },
 
