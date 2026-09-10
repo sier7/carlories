@@ -857,6 +857,34 @@ group('健康数据同步：剪贴板载荷解析')
         extractGistContent({ files: { [GIST_FILENAME]: { content: GIST_PLACEHOLDER } } }),
         null,
       ))
+
+    group('描述字段也是合法来源（快捷指令里少两层嵌套）')
+    check('文件是占位符时，读描述', () =>
+      assert.equal(
+        extractGistContent({
+          files: { [GIST_FILENAME]: { content: GIST_PLACEHOLDER } },
+          description: 'CAL/TODAY ACT=842 RST=1710',
+        }),
+        'CAL/TODAY ACT=842 RST=1710',
+      ))
+    check('完全只有描述（没有任何文件内容）', () =>
+      assert.equal(
+        extractGistContent({ files: {}, description: 'CAL/TODAY ACT=1 RST=2' }),
+        'CAL/TODAY ACT=1 RST=2',
+      ))
+    check('描述不像载荷时忽略它', () =>
+      assert.equal(
+        extractGistContent({ files: {}, description: 'Carlories 健康数据信箱' }),
+        null,
+      ))
+    check('文件里有数据时文件优先', () =>
+      assert.equal(
+        extractGistContent({
+          files: { [GIST_FILENAME]: { content: 'CAL/2026-10-03 ACT=1 RST=2' } },
+          description: 'CAL/TODAY ACT=9 RST=9',
+        }),
+        'CAL/2026-10-03 ACT=1 RST=2',
+      ))
     check('没有 files 时返回 null，而不是崩', () => assert.equal(extractGistContent({}), null))
     check('完全不相干的文件返回 null', () =>
       assert.equal(extractGistContent({ files: { 'x.txt': { content: '随便什么' } } }), null))
