@@ -171,9 +171,15 @@ function balance(health, burn, dayBalance, handlers) {
     sourceNote ? h('div', { class: 'balance-note' }, sourceNote) : null,
 
     burn === null
-      ? h('p', { class: 'hint' },
-          '点「同步健康数据」会从剪贴板读入快捷指令刚刚放进去的活动能量与静息能量。'
-          + '还没装快捷指令的话，也可以点上面那一行手动填。')
+      ? h('button', {
+          class: 'sync-cta',
+          type: 'button',
+          onClick: handlers.syncHealth,
+        },
+          h('span', { class: 'sync-cta-title' }, '同步今天的消耗'),
+          h('span', { class: 'sync-cta-sub' },
+            '从剪贴板读入快捷指令取好的数据。也可以点上面那一行手动填。'),
+        )
       : h('div', { class: 'balance-row net' },
           h('span', { class: 'balance-name' }, desc.label),
           h('span', { class: `balance-value ${desc.kind}` },
