@@ -397,6 +397,7 @@ group('今日页')
     openTargets: () => calls.push(['openTargets']),
     openBurn: () => calls.push(['openBurn']),
     syncHealth: () => calls.push(['syncHealth']),
+    openSync: () => calls.push(['openSync']),
   }
 
   const baseState = {
@@ -550,6 +551,21 @@ group('今日页')
   })
   check('已经有消耗数据后不再显示那个按钮', () =>
     assert.equal(full.querySelectorAll('.sync-cta').length, 0))
+  check('「同步设置」按钮接到 openSync', () => {
+    const before = calls.length
+    // 按文本找，别按下标 —— 页面上有多个 .icon-btn（营养素区还有一个「目标」）
+    const button = full.querySelectorAll('.icon-btn').find((b) => b.textContent === '同步设置')
+    assert.ok(button, '找不到「同步设置」按钮')
+    button.dispatch('click')
+    assert.ok(calls.slice(before).some((c) => c[0] === 'openSync'))
+  })
+  check('消耗来源标为「来自中继」而不是「手动填写」', () => {
+    const relay = dayView(
+      { ...baseState, health: { ...health, source: 'relay' } },
+      handlers,
+    )
+    assert.ok(relay.textContent.includes('来自中继'), `实际：${relay.textContent.slice(0, 300)}`)
+  })
 
   group('今日页：外食那种「只填了热量」的记录')
   const beef = buildFreeEntry({
@@ -1179,6 +1195,104 @@ group('多日视图：只摆数据，不做判断')
   check('还没加载时显示载入中而不是崩', () => {
     const n = trendView({ rangeDays: 7, summary: null, targets: null }, { setRange: () => {} })
     assert.ok(n.textContent.includes('载入中'))
+  })
+}
+
+group('健康数据同步设置')
+{
+  const { openSyncSheet } = await import('../app/ui/sheets.js')
+
+  const noop = async () => {}
+  const base = { onSaveConfig: noop, onPullRelay: noop, onPullClipboard: noop, onClear: noop }
+
+  check('未配置中继时说明为什么需要点击，并且不给「拉取」按钮', () => {
+    const overlay = openSyncSheet({ ...base, sync: { endpoint: null, token: null }, health: null })
+    const text = overlay.textContent
+    assert.ok(text.includes('中继同步未开启'), `实际：${text.slice(0, 200)}`)
+    assert.ok(text.includes('系统限制'))
+    assert.ok(!text.includes('立即从服务器拉取'))
+    overlay.remove()
+  })
+
+  check('已配置中继时显示地址与来源', () => {
+    const overlay = openSyncSheet({
+      ...base,
+      sync: { endpoint: 'https://relay.example.workers.dev', token: 'tok123' },
+      health: {
+        date: '2026-10-03', activeKcal: 800, restingKcal: 1700,
+        source: 'relay', importedAt: new Date().toISOString(),
+      },
+    })
+    const text = overlay.textContent
+    assert.ok(text.includes('中继同步已开启'))
+    assert.ok(text.includes('relay.example.workers.dev'))
+    assert.ok(text.includes('来源：中继'), `实际：${text.slice(0, 300)}`)
+    assert.ok(text.includes('立即从服务器拉取'))
+    overlay.remove()
+  })
+
+  check('配置框预填当前配置，方便核对', () => {
+    const overlay = openSyncSheet({
+      ...base,
+      sync: { endpoint: 'https://relay.example.workers.dev', token: 'tok123' },
+      health: null,
+    })
+    const area = overlay.querySelector('.paste-area')
+    assert.ok(area.value.startsWith('carlories-relay:v1|'), `实际：${area.value}`)
+    overlay.remove()
+  })
+
+  check('★ 面板里有「保存配置」按钮（否则粘进去也白粘）', () => {
+    const overlay = openSyncSheet({ ...base, sync: { endpoint: null, token: null }, health: null })
+    const labels = overlay.querySelectorAll('button').map((b) => b.textContent)
+    assert.ok(labels.includes('保存配置'), `实际：${labels.join(',')}`)
+    overlay.remove()
+  })
+
+  check('粘贴看不懂的内容时给可操作的提示，而不是静默失败', () => {
+    let saved = null
+    const overlay = openSyncSheet({
+      ...base,
+      onSaveConfig: async (c) => { saved = c },
+      sync: { endpoint: null, token: null },
+      health: null,
+    })
+    overlay.querySelector('.paste-area').value = '乱七八糟的东西'
+    overlay.clickByText('保存配置')
+    assert.equal(saved, null, '不该把看不懂的内容存下去')
+    assert.ok(overlay.querySelector('.messages').textContent.includes('carlories-relay:v1'))
+    overlay.remove()
+  })
+
+  check('粘贴合法配置串时把地址与口令拆开交出去', async () => {
+    let saved = null
+    const overlay = openSyncSheet({
+      ...base,
+      onSaveConfig: async (c) => { saved = c },
+      sync: { endpoint: null, token: null },
+      health: null,
+    })
+    overlay.querySelector('.paste-area').value =
+      'carlories-relay:v1|https://relay.example.workers.dev|tok123'
+    overlay.clickByText('保存配置')
+    await tick()
+    assert.ok(saved, 'onSaveConfig 未被调用')
+    assert.equal(saved.endpoint, 'https://relay.example.workers.dev')
+    assert.equal(saved.token, 'tok123')
+  })
+
+  check('清空配置框保存即关闭中继', async () => {
+    let saved = null
+    const overlay = openSyncSheet({
+      ...base,
+      onSaveConfig: async (c) => { saved = c },
+      sync: { endpoint: 'https://relay.example.workers.dev', token: 'tok123' },
+      health: null,
+    })
+    overlay.querySelector('.paste-area').value = ''
+    overlay.clickByText('保存配置')
+    await tick()
+    assert.deepEqual(saved, { endpoint: null, token: null })
   })
 }
 
