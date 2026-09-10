@@ -16,7 +16,7 @@ import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { runSetupGist, GIST_DESCRIPTION } from './setup-gist.mjs'
-import { GIST_FILENAME, parseGistConfig } from '../app/core/healthSync.js'
+import { GIST_FILENAME, extractGistContent, parseGistConfig } from '../app/core/healthSync.js'
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const TMP = join(ROOT, '.tmp', 'gist-test')
@@ -142,10 +142,15 @@ group('首次创建信箱')
     const created = [...mock.state.gists.values()][0]
     assert.ok(created.body.files[GIST_FILENAME], `实际：${Object.keys(created.body.files).join(',')}`)
   })
-  check('初始内容不含任何看起来像数据的载荷（免得应用把占位符当数据）', () => {
+  check('★ 初始内容是占位符：非空（GitHub 拒绝空文件），但应用不会把它当数据', () => {
     const created = [...mock.state.gists.values()][0]
     const content = created.body.files[GIST_FILENAME].content
-    assert.ok(!/CAL\//.test(content), `实际内容：${JSON.stringify(content)}`)
+    assert.ok(content.trim().length > 0, '空内容会被 GitHub 以 422 拒绝')
+    assert.equal(
+      extractGistContent({ files: { [GIST_FILENAME]: { content } } }),
+      null,
+      '占位符必须被当成「还没有数据」',
+    )
   })
   check('描述写清楚了用途', () => {
     const created = [...mock.state.gists.values()][0]
