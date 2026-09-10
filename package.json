@@ -1,0 +1,18 @@
+{
+  "name": "carlories",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "个人卡路里与营养记录应用（食物热量表模块）",
+  "scripts": {
+    "serve": "node tools/serve.mjs",
+    "serve:lan": "node tools/serve.mjs --lan",
+    "icons": "node tools/make-icons.mjs",
+    "deploy": "node tools/deploy.mjs",
+    "deploy:check": "node tools/deploy.mjs --check",
+    "test": "node tools/test-core.mjs && node tools/test-ui-smoke.mjs && node tools/test-deploy.mjs",
+    "test:core": "node tools/test-core.mjs",
+    "test:ui": "node tools/test-ui-smoke.mjs",
+    "test:deploy": "node tools/test-deploy.mjs"
+  }
+}
