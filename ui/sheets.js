@@ -197,29 +197,31 @@ export function openSyncSheet({
   sync,
   health,
   onSaveConfig,
-  onPullRelay,
+  onPullGist,
   onPullClipboard,
   onClear,
 }) {
-  const { parseRelayConfig, formatRelayConfig } = healthSync
-  const configured = Boolean(sync && sync.endpoint && sync.token)
+  const { parseGistConfig, formatGistConfig } = healthSync
+  const configured = Boolean(sync && sync.gistId)
   const configInput = h('textarea', {
     class: 'paste-area',
-    rows: 3,
-    placeholder: '把部署脚本打印的那一整行粘到这里',
-    value: configured ? formatRelayConfig(sync) : '',
+    rows: 2,
+    placeholder: 'Gist 地址或 ID，例如 https://gist.github.com/sier7/a1b2c3…',
+    value: configured ? formatGistConfig(sync.gistId) : '',
   })
 
   const statusLines = []
   if (health && health.importedAt) {
     const sourceLabel =
-      health.source === 'relay' ? '中继' : health.source === 'shortcut' ? '快捷指令（剪贴板）' : '手动填写'
+      health.source === 'mailbox' ? '信箱' : health.source === 'shortcut' ? '快捷指令（剪贴板）' : '手动填写'
     statusLines.push(`上次同步：${freshness(health) || '刚刚'} · 来源：${sourceLabel}`)
   } else {
     statusLines.push('今天还没有消耗数据')
   }
   statusLines.push(
-    configured ? `中继已配置：${sync.endpoint}` : '中继未配置 —— 每次需要手动点一下读剪贴板',
+    configured
+      ? '信箱已配置：打开应用时自动拉取，不需要任何点击'
+      : '信箱未配置 —— 每次需要手动点一下读剪贴板',
   )
 
   const messages = h('div', { class: 'messages' })
@@ -232,20 +234,20 @@ export function openSyncSheet({
     const raw = configInput.value.trim()
     if (raw === '') {
       try {
-        await onSaveConfig({ endpoint: null, token: null })
+        await onSaveConfig({ gistId: null })
         overlay.remove()
       } catch (error) {
         showError(error.message)
       }
       return
     }
-    const parsed = parseRelayConfig(raw)
-    if (!parsed || parsed.incomplete) {
-      showError('这行配置看不懂。应当是部署脚本打印的 carlories-relay:v1|…|… 那一整行。')
+    const parsed = parseGistConfig(raw)
+    if (!parsed) {
+      showError('这看起来不是一个 Gist 地址或 ID。可以直接粘贴部署脚本打印的那一整行。')
       return
     }
     try {
-      await onSaveConfig({ endpoint: parsed.endpoint, token: parsed.token })
+      await onSaveConfig({ gistId: parsed.gistId })
       overlay.remove()
     } catch (error) {
       showError(error.message)
@@ -256,20 +258,20 @@ export function openSyncSheet({
     title: '健康数据同步',
     body: [
       h('div', { class: 'readout' },
-        h('div', { class: 'readout-name' }, configured ? '中继同步已开启' : '中继同步未开启'),
+        h('div', { class: 'readout-name' }, configured ? '自动同步已开启' : '自动同步未开启'),
         ...statusLines.map((line) => h('div', { class: 'readout-sub' }, line)),
       ),
 
       h('p', { class: 'hint' },
         configured
-          ? '打开应用时会自动从中继拉取，不需要任何点击。中继上的数据保留 400 天，'
-            + '所以本地数据丢了也能补回来。'
-          : 'iOS 上网页读剪贴板必须由你点一下（系统限制），所以没有中继时每次都要手动同步。'
-            + '配好中继之后就不需要了。'),
+          ? '打开应用时会自动从信箱拉取，不需要任何点击。信箱里存的是纯文本，'
+            + '数据不经过任何第三方服务。'
+          : 'iOS 上网页读剪贴板必须由你点一下（系统限制），所以没有信箱时每次都要手动同步。'
+            + '配好之后就不需要了。'),
 
       configured
-        ? sheetButton('立即从服务器拉取', async () => {
-            await onPullRelay()
+        ? sheetButton('立即拉取一次', async () => {
+            await onPullGist({ force: true })
             overlay.remove()
           }, { primary: true })
         : null,
@@ -284,11 +286,11 @@ export function openSyncSheet({
             overlay.remove()
           }, { primary: true }),
 
-      field('中继配置', configInput, null, { wrapLabel: true }),
-      sheetButton('保存配置', save, { primary: !configured }),
+      field('Gist 地址或 ID', configInput, null, { wrapLabel: true }),
+      sheetButton('保存配置', save),
       h('p', { class: 'hint' },
-        '清空这里并保存即可关闭中继。中继上存的是每天两个整数（活动能量、静息能量），'
-        + '口令在你自己的手机上。'),
+        '清空这里并保存即可关闭自动同步。应用只读这个 Gist，'
+        + '写入用的 token 只在快捷指令里，不在应用里。'),
 
       health
         ? sheetButton('清除今天的消耗数据', async () => {
