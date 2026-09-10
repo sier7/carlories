@@ -2,5 +2,7 @@
 node_modules/
 *.log
 
-# 部署用的 GitHub token —— 绝不能被提交
+# 部署用的凭据 —— 绝不能被提交
 .github-token
+.cloudflare
+.relay-token
