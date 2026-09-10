@@ -194,3 +194,52 @@ export function describeRecords(records) {
   }
   return `${records.length} 天：${records.map((r) => r.date).join('、')}`
 }
+
+// ── 中继配置 ────────────────────────────────────────────────────────────
+//
+// 中继方案（见 worker/index.js）让应用不必读剪贴板，也就免掉了那次点击。
+// 配置由部署脚本打印成一整行，用户复制后在手机上粘贴一次即可 ——
+// 避免在手机键盘上敲一个 32 位的口令。
+
+export const RELAY_CONFIG_PREFIX = 'carlories-relay:v1|'
+
+/**
+ * 解析中继配置串。也接受直接粘一个地址（此时没有口令，拉取会失败，
+ * 但至少能存下来，用户后面再补口令）。
+ */
+export function parseRelayConfig(text) {
+  const trimmed = String(text ?? '').trim()
+  if (trimmed === '') return null
+
+  if (!trimmed.startsWith(RELAY_CONFIG_PREFIX)) {
+    if (/^https?:\/\//i.test(trimmed)) {
+      return { endpoint: normalizeEndpoint(trimmed), token: null, incomplete: true }
+    }
+    return null
+  }
+
+  const rest = trimmed.slice(RELAY_CONFIG_PREFIX.length)
+  // 用最后一个竖线分隔：地址里不会出现它，而口令是 base64url，也不会
+  const separator = rest.lastIndexOf('|')
+  if (separator < 0) return null
+
+  const endpoint = normalizeEndpoint(rest.slice(0, separator))
+  const token = rest.slice(separator + 1).trim()
+  if (!/^https?:\/\//i.test(endpoint) || token === '') return null
+
+  return { endpoint, token, incomplete: false }
+}
+
+export function formatRelayConfig({ endpoint, token }) {
+  return `${RELAY_CONFIG_PREFIX}${normalizeEndpoint(endpoint)}|${token}`
+}
+
+export function normalizeEndpoint(url) {
+  return String(url ?? '').trim().replace(/\/+$/, '')
+}
+
+/** 拉取区间数据的地址 */
+export function buildRelayUrl(endpoint, from, to) {
+  const base = normalizeEndpoint(endpoint)
+  return `${base}/days?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`
+}
