@@ -264,15 +264,28 @@ async function loadRange() {
 }
 
 function render() {
-  mount(root, h('div', { class: 'app' },
-    state.error ? h('p', { class: 'msg error' }, `出错了：${state.error}`) : null,
-    state.tab === 'day'
-      ? dayView(state, handlers)
-      : state.tab === 'trend'
-        ? trendView(state, handlers)
-        : libraryView(state, handlers),
-    tabBar(),
-  ))
+  try {
+    mount(root, h('div', { class: 'app' },
+      state.error ? h('p', { class: 'msg error' }, `出错了：${state.error}`) : null,
+      state.tab === 'day'
+        ? dayView(state, handlers)
+        : state.tab === 'trend'
+          ? trendView(state, handlers)
+          : libraryView(state, handlers),
+      tabBar(),
+    ))
+  } catch (error) {
+    // 渲染抛异常时，如果不兜住，DOM 会停在上一次的样子 ——
+    // 界面一动不动，而且没有任何提示。这是最糟的失败方式，所以宁可把
+    // 原始堆栈糊在屏幕上。
+    const detail = error && error.stack ? error.stack : String(error)
+    mount(root, h('div', { class: 'app' },
+      h('h1', null, '界面渲染出错了'),
+      h('p', { class: 'msg error' }, detail),
+      h('p', { class: 'hint' }, '把这段文字发给我。'),
+      tabBar(),
+    ))
+  }
 }
 
 function tabBar() {
@@ -302,6 +315,8 @@ const handlers = {
     if (state.tab === tab) return
     state.tab = tab
     if (tab === 'trend') state.summary = null
+    // 先切过去再加载。等数据回来才渲染的话，加载一慢按钮看起来就是坏的。
+    render()
     refresh()
   },
 
