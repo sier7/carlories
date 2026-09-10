@@ -65,7 +65,9 @@ for (const file of files) {
 
   let response
   try {
-    response = await fetch(url, { redirect: 'follow' })
+    // no-store：GitHub Pages 的 CDN 会缓存旧版本，不加这个会把「刚部署完
+    // 但 CDN 还没刷新」误报成「文件内容不一致」——我们被这个坑过一次。
+    response = await fetch(url, { redirect: 'follow', cache: 'no-store' })
   } catch (error) {
     problems.push({ path: file.repoPath, reason: `网络失败：${error.message}` })
     continue
