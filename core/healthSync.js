@@ -250,23 +250,27 @@ export function buildGistApiUrl(gistId) {
 /**
  * 从 Gist 的 API 响应里取出载荷文本。
  *
- * 优先找约定文件名；找不到就退而在所有文件里找一个「看起来像载荷」的 ——
- * 你可能在网页上把文件重命名过，那时候不该整个同步就废掉。
+ * 支持三处，按优先级：
+ *   1. 约定文件 carlories.txt 的内容
+ *   2. **Gist 的描述字段**
+ *   3. 任何看起来像载荷的文件
  *
- * 占位内容会被当成「还没有数据」，这样界面能给出准确的提示，
- * 而不是报一句「内容不是健康数据」让人以为哪里坏了。
+ * 为什么支持描述字段：iOS 快捷指令里「请求体 → JSON」打开的是**键值对编辑器**，
+ * 不是粘一段 JSON 的文本框。往文件里写要套三层嵌套（files → 文件名 → content），
+ * 而写描述只要**一个字段**。少两层，就少两处能配错的地方。
  */
 export function extractGistContent(gist) {
   const files = (gist && gist.files) || {}
-
   const isPlaceholder = (text) => String(text).trim() === GIST_PLACEHOLDER.trim()
 
   const named = files[GIST_FILENAME]
   if (named && typeof named.content === 'string') {
     const content = named.content
     if (content.trim() !== '' && !isPlaceholder(content)) return content
-    return null
   }
+
+  const description = gist && typeof gist.description === 'string' ? gist.description.trim() : ''
+  if (description !== '' && looksLikeHealthPayload(description)) return description
 
   for (const file of Object.values(files)) {
     if (!file || typeof file.content !== 'string') continue
