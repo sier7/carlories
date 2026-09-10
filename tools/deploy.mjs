@@ -68,7 +68,7 @@ export function collectFiles(root = ROOT) {
     const full = join(root, rel)
     if (existsSync(full)) files.push({ repoPath: rel, localPath: full, site: false })
   }
-  for (const dir of ['tools', 'docs', 'worker']) {
+  for (const dir of ['tools', 'docs']) {
     const full = join(root, dir)
     if (!existsSync(full)) continue
     for (const rel of walk(full)) {
