@@ -1,85 +1,99 @@
 /**
- * 健康数据同步载荷的解析。
+ * 健康数据同步：载荷解析 + Gist 信箱配置。
  *
- * 载荷刻意用纯文本而不是 JSON：
- *   · 快捷指令里拼字符串比拼 JSON 简单得多（少一层字典构造）
- *   · 你在剪贴板里一眼能看懂，数字对不上时能手工改
- *   · 格式坏了也看得见坏在哪一行
+ * ── 为什么用 Gist 当信箱 ────────────────────────────────────────────────
+ * iOS 上网页应用读剪贴板必须由用户手势触发，所以「数据自动进到应用里」
+ * 在纯网页方案里做不到零点击。中间放个服务就能解决，但 Cloudflare 的
+ * workers.dev 域名在国内被 DNS 污染，用不了。
  *
- * 格式：
- *   CAL/2026-10-03
+ * GitHub 这条路是通的（应用本身就托管在 GitHub Pages 上）。用 Gist 而不是
+ * 仓库文件，是因为两点：
+ *   · Gist 按文件名覆盖，**不需要处理 sha** —— 快捷指令少一半动作
+ *   · 不产生 commit 噪音
+ * 而且读一个公开 Gist 不需要任何凭据，所以**口令只出现在快捷指令里，
+ * 不进应用**。
+ *
+ * ── 载荷格式 ────────────────────────────────────────────────────────────
+ * 纯文本，两种写法都认：
+ *
+ *   CAL/2026-10-03          CAL/TODAY ACT=842 RST=1710
  *   ACT=842
  *   RST=1710
  *
- * 可以连着放多天，用于补录：
- *   CAL/2026-10-02
- *   ACT=950
- *   RST=1690
+ * 单行写法是为了让快捷指令能用一个「文本」动作直接拼出整个 JSON 请求体，
+ * 而不必去搭嵌套字典 —— 那是整个流程里最容易配错的地方。
  *
- * 日期是幂等键：同一天重复导入即覆盖，不会重复累加。
+ * 日期可以写 TODAY，由应用补上当天。这样快捷指令也不必碰「格式化日期」。
  */
 
 import { toNumberOrNull } from './food.js'
 
 export const PAYLOAD_PREFIX = 'CAL/'
 export const SOURCE_SHORTCUT = 'shortcut'
-
-/** 日期可以写字面量 TODAY，由应用解析成当天。见 parseHealthPayload 的说明 */
 export const TODAY_TOKEN = 'TODAY'
 
-/**
- * 单位词。快捷指令把「计算统计」的结果插进「文本」动作时，可能带上单位后缀
- * （`842.5 kcal`）。所以取值不能假设后面什么都没有。
- */
 const KILOJOULE_UNITS = /^(kj|千焦|千焦耳|kilojoule|kilojoules)$/i
 const KCAL_UNITS = /^(kcal|cal|千卡|大卡|卡|卡路里|kilocalorie|kilocalories)$/i
 
 /**
- * 从「数字 + 可选单位」里拆出数字。
+ * 一次性扫出所有可识别的记号。
  *
- * 数字部分必须**贪婪**匹配。用惰性量词会得到灾难性的结果：
- *   "842" 会被拆成数字 8 + 单位 "42"
- * 因为正则总是可以让数字部分尽量短、把剩下的都推给单位部分。
+ * 用「扫描」而不是「逐行解析」，是因为这样两种写法（多行 / 单行）走同一
+ * 条代码路径 —— 两套解析迟早会分叉。好处是也能把夹在中间看不懂的内容
+ * 原样报出来，而不是静默丢掉。
  */
-function parseQuantity(text) {
-  const match = /^\s*(-?[\d][\d.,，]*)\s*(.*)$/.exec(String(text ?? ''))
-  if (!match) return { value: null, unit: '' }
-  return { value: toNumberOrNull(match[1]), unit: match[2].trim() }
-}
+/**
+ * 只认已知的单位词。
+ *
+ * 这里**不能**用 `[A-Za-z]*` 这种任意字母：单行写法里 `ACT=842 RST=1710` 的
+ * 「842」后面跟着空格，任意字母的单位组会把 `RST` 当成单位吞掉，于是静息
+ * 能量整个丢失。白名单之外的内容会落进「看不懂」报告里，那才是对的。
+ */
+const UNIT_WORDS = [
+  'kilocalories', 'kilojoules', 'kilocalorie', 'kilojoule',
+  'calories', 'calorie', 'kcal', 'cal', 'kj',
+  '卡路里', '千卡', '千焦', '大卡',
+].join('|')
+
+const TOKEN_PATTERN = new RegExp(
+  [
+    String.raw`CAL\/(\d{4}-\d{2}-\d{2}|TODAY)`,
+    // 值前后的空白只能用 [ \t]，不能用 \s —— \s 包含换行，会跨行吞掉下一个键。
+    String.raw`(ACT|RST)[ \t]*[=:：][ \t]*(-?[\d][\d.,，]*)(?:[ \t]*(${UNIT_WORDS}))?`,
+  ].join('|'),
+  'gi',
+)
 
 /** 剪贴板里乱七八糟什么都有，先廉价地判断一下是不是我们的东西 */
 export function looksLikeHealthPayload(text) {
-  return typeof text === 'string' && /^\s*CAL\//im.test(text)
+  return typeof text === 'string' && /CAL\//i.test(text)
 }
 
 /**
  * 解析。返回 { records, problems }。
  *
- * 单行出错不会毁掉整份载荷 —— 能认的都认下来，认不出的逐条报告。
- * 这与食物表导入的「整体成功或整体失败」不同：那里是在覆盖你的档案，
- * 这里只是往一天的格子里填两个数，部分成功没有歧义。
+ * 认得出的都认下来，认不出的逐条报告 —— 与食物表导入的「整体成功或整体
+ * 失败」不同：那里是在覆盖你的档案，这里只是往几天的格子里填两个数，
+ * 部分成功没有歧义。
  *
- * 关于 CAL/TODAY：
- * 日期本来该由快捷指令用「格式化日期」动作生成成 yyyy-MM-dd，但那一步是
- * 整个快捷指令里最容易配错的地方（格式字符串写错就得到一个非法日期）。
- * 所以允许直接写 TODAY —— 快捷指令里打四个字母就行，由应用补上当天日期。
- *
- * @param text 剪贴板内容
- * @param options.today 当天日期（YYYY-MM-DD）。用了 TODAY 却没给就会报错。
+ * @param text 剪贴板内容或 Gist 文件内容
+ * @param options.today 当天日期（YYYY-MM-DD）。载荷里用了 TODAY 却没给就会报错。
  */
 export function parseHealthPayload(text, { today = null } = {}) {
   if (typeof text !== 'string' || text.trim() === '') {
-    return { records: [], problems: ['剪贴板是空的'] }
+    return { records: [], problems: ['内容是空的'] }
   }
   if (!looksLikeHealthPayload(text)) {
     return {
       records: [],
-      problems: ['剪贴板里的内容不是健康数据（应该以 CAL/ 开头）'],
+      problems: ['内容不是健康数据（里面应该有 CAL/ 开头的日期）'],
     }
   }
 
+  const source = String(text)
   const records = []
   const problems = []
+  const junk = []
   let current = null
 
   const flush = () => {
@@ -92,15 +106,19 @@ export function parseHealthPayload(text, { today = null } = {}) {
     current = null
   }
 
-  for (const raw of String(text).split(/\r?\n/)) {
-    const line = raw.trim()
-    if (line === '') continue
+  TOKEN_PATTERN.lastIndex = 0
+  let match
+  let consumed = 0
 
-    const head = /^CAL\/(\d{4}-\d{2}-\d{2}|TODAY)$/i.exec(line)
-    if (head) {
+  while ((match = TOKEN_PATTERN.exec(source)) !== null) {
+    const between = source.slice(consumed, match.index).trim()
+    if (between !== '') junk.push(between)
+    consumed = match.index + match[0].length
+
+    if (match[1] !== undefined) {
       flush()
-      const token = head[1].toUpperCase()
-      let date = head[1]
+      const token = match[1].toUpperCase()
+      let date = match[1]
       if (token === TODAY_TOKEN) {
         if (!today) {
           problems.push('载荷里写了 TODAY，但应用不知道今天是几号')
@@ -109,58 +127,48 @@ export function parseHealthPayload(text, { today = null } = {}) {
           date = today
         }
       }
-      current = {
-        date,
-        activeKcal: null,
-        restingKcal: null,
-        source: SOURCE_SHORTCUT,
-      }
+      current = { date, activeKcal: null, restingKcal: null, source: SOURCE_SHORTCUT }
       continue
     }
 
-    const kv = /^(ACT|RST)\s*[=:：]\s*(.*)$/i.exec(line)
-    if (kv) {
-      if (!current) {
-        problems.push(`「${line}」前面缺少 CAL/日期 这一行`)
-        continue
-      }
-
-      const { value, unit } = parseQuantity(kv[2])
-      if (value === null) {
-        problems.push(`「${line}」里找不到数字`)
-        continue
-      }
-      if (value < 0) {
-        problems.push(`「${line}」是负数`)
-        continue
-      }
-      // 千焦比千卡大 4.184 倍。这是这套数据里最容易出错、也最难自己发现的
-      // 一种错 —— 数字看起来完全正常，只是整体偏大四倍。
-      if (KILOJOULE_UNITS.test(unit)) {
-        problems.push(
-          `「${line}」的单位看起来是千焦而不是千卡。`
-          + '去健康 App 里把能量单位改成「千卡」再同步一次 —— '
-          + '千焦的数字会比真实的卡路里大 4.184 倍。',
-        )
-        continue
-      }
-      if (unit !== '' && !KCAL_UNITS.test(unit)) {
-        // 数字仍然采用，但把多余内容说出来，免得悄悄丢掉信息
-        problems.push(`「${line}」数字后面有看不懂的内容「${unit}」，已按前面的数字处理`)
-      }
-
-      if (kv[1].toUpperCase() === 'ACT') current.activeKcal = value
-      else current.restingKcal = value
+    // ACT / RST
+    if (!current) {
+      problems.push(`「${match[2]}=${match[3]}」前面缺少 CAL/日期`)
       continue
     }
+    const value = toNumberOrNull(match[3])
+    if (value === null || value < 0) {
+      problems.push(`「${match[2]}=${match[3]}」不是有效的热量值`)
+      continue
+    }
+    const unit = (match[4] || '').trim()
+    // 千焦比千卡大 4.184 倍。这是这套数据里最容易出错、也最难自己发现的一种错 ——
+    // 数字看起来完全正常，只是整体偏大四倍。
+    if (unit !== '' && KILOJOULE_UNITS.test(unit)) {
+      problems.push(
+        `「${match[2]}=${match[3]} ${unit}」的单位看起来是千焦而不是千卡。`
+        + '去健康 App 里把能量单位改成「千卡」再同步一次 —— '
+        + '千焦的数字会比真实的卡路里大 4.184 倍。',
+      )
+      continue
+    }
+    if (unit !== '' && !KCAL_UNITS.test(unit)) {
+      problems.push(`「${unit}」没看懂，已按前面的数字处理`)
+    }
 
-    problems.push(`看不懂这一行：「${line}」`)
+    if (match[2].toUpperCase() === 'ACT') current.activeKcal = value
+    else current.restingKcal = value
   }
 
+  const tail = source.slice(consumed).trim()
+  if (tail !== '') junk.push(tail)
   flush()
 
-  // 丢掉落不到任何一天的记录（TODAY 但没给 today 的情况）
-  const usable = records.filter((r) => Boolean(r.date))
+  for (const piece of junk) {
+    problems.push(`看不懂这段内容：「${piece.slice(0, 40)}」`)
+  }
+
+  const usable = records.filter((record) => Boolean(record.date))
   if (usable.length !== records.length) {
     problems.push('有记录没有有效日期，已跳过')
   }
@@ -171,10 +179,10 @@ export function parseHealthPayload(text, { today = null } = {}) {
 /** 反向：把记录拼成载荷文本。用于出错时对照，以及测试往返一致性 */
 export function formatHealthPayload(records) {
   return (records || [])
-    .map((r) => {
-      const lines = [`${PAYLOAD_PREFIX}${r.date}`]
-      if (typeof r.activeKcal === 'number') lines.push(`ACT=${Math.round(r.activeKcal)}`)
-      if (typeof r.restingKcal === 'number') lines.push(`RST=${Math.round(r.restingKcal)}`)
+    .map((record) => {
+      const lines = [`${PAYLOAD_PREFIX}${record.date}`]
+      if (typeof record.activeKcal === 'number') lines.push(`ACT=${Math.round(record.activeKcal)}`)
+      if (typeof record.restingKcal === 'number') lines.push(`RST=${Math.round(record.restingKcal)}`)
       return lines.join('\n')
     })
     .join('\n\n')
@@ -182,64 +190,70 @@ export function formatHealthPayload(records) {
 
 /** 从多条记录里挑出与给定日期相关的那条 */
 export function recordForDate(records, date) {
-  return (records || []).find((r) => r.date === date) || null
+  return (records || []).find((record) => record.date === date) || null
 }
 
 /** 供界面提示用的一句话摘要 */
 export function describeRecords(records) {
   if (!records || records.length === 0) return '没有可用数据'
   if (records.length === 1) {
-    const r = records[0]
-    return `${r.date}：活动 ${r.activeKcal ?? '—'} + 静息 ${r.restingKcal ?? '—'} kcal`
+    const record = records[0]
+    return `${record.date}：活动 ${record.activeKcal ?? '—'} + 静息 ${record.restingKcal ?? '—'} kcal`
   }
-  return `${records.length} 天：${records.map((r) => r.date).join('、')}`
+  return `${records.length} 天：${records.map((record) => record.date).join('、')}`
 }
 
-// ── 中继配置 ────────────────────────────────────────────────────────────
-//
-// 中继方案（见 worker/index.js）让应用不必读剪贴板，也就免掉了那次点击。
-// 配置由部署脚本打印成一整行，用户复制后在手机上粘贴一次即可 ——
-// 避免在手机键盘上敲一个 32 位的口令。
+// ── Gist 信箱 ───────────────────────────────────────────────────────────
 
-export const RELAY_CONFIG_PREFIX = 'carlories-relay:v1|'
+export const GIST_CONFIG_PREFIX = 'carlories-gist:v1|'
+export const GIST_FILENAME = 'carlories.txt'
 
 /**
- * 解析中继配置串。也接受直接粘一个地址（此时没有口令，拉取会失败，
- * 但至少能存下来，用户后面再补口令）。
+ * 解析信箱配置。接受三种写法，因为用户可能从任何地方复制：
+ *   carlories-gist:v1|<id>          ← 部署脚本打印的
+ *   https://gist.github.com/<用户>/<id>
+ *   <id>                             ← 光一个 id
  */
-export function parseRelayConfig(text) {
+export function parseGistConfig(text) {
   const trimmed = String(text ?? '').trim()
   if (trimmed === '') return null
 
-  if (!trimmed.startsWith(RELAY_CONFIG_PREFIX)) {
-    if (/^https?:\/\//i.test(trimmed)) {
-      return { endpoint: normalizeEndpoint(trimmed), token: null, incomplete: true }
-    }
-    return null
+  let id = trimmed
+  if (id.startsWith(GIST_CONFIG_PREFIX)) id = id.slice(GIST_CONFIG_PREFIX.length).trim()
+
+  // gist 链接有两种形式：/用户/id 和 /id
+  id = id.replace(/^https?:\/\/gist\.github\.com\/(?:[^/\s]+\/)?/i, '')
+  id = id.replace(/[#?].*$/, '').replace(/\/+$/, '').trim()
+
+  // gist id 是十六进制
+  if (!/^[0-9a-f]{5,64}$/i.test(id)) return null
+  return { gistId: id }
+}
+
+export function formatGistConfig(gistId) {
+  return `${GIST_CONFIG_PREFIX}${gistId}`
+}
+
+export function buildGistApiUrl(gistId) {
+  return `https://api.github.com/gists/${gistId}`
+}
+
+/**
+ * 从 Gist 的 API 响应里取出载荷文本。
+ *
+ * 优先找约定文件名；找不到就退而在所有文件里找一个「看起来像载荷」的 ——
+ * 你可能在网页上把文件重命名过，那时候不该整个同步就废掉。
+ */
+export function extractGistContent(gist) {
+  const files = (gist && gist.files) || {}
+  const named = files[GIST_FILENAME]
+  if (named && typeof named.content === 'string' && named.content.trim() !== '') {
+    return named.content
   }
-
-  const rest = trimmed.slice(RELAY_CONFIG_PREFIX.length)
-  // 用最后一个竖线分隔：地址里不会出现它，而口令是 base64url，也不会
-  const separator = rest.lastIndexOf('|')
-  if (separator < 0) return null
-
-  const endpoint = normalizeEndpoint(rest.slice(0, separator))
-  const token = rest.slice(separator + 1).trim()
-  if (!/^https?:\/\//i.test(endpoint) || token === '') return null
-
-  return { endpoint, token, incomplete: false }
-}
-
-export function formatRelayConfig({ endpoint, token }) {
-  return `${RELAY_CONFIG_PREFIX}${normalizeEndpoint(endpoint)}|${token}`
-}
-
-export function normalizeEndpoint(url) {
-  return String(url ?? '').trim().replace(/\/+$/, '')
-}
-
-/** 拉取区间数据的地址 */
-export function buildRelayUrl(endpoint, from, to) {
-  const base = normalizeEndpoint(endpoint)
-  return `${base}/days?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`
+  for (const file of Object.values(files)) {
+    if (file && typeof file.content === 'string' && looksLikeHealthPayload(file.content)) {
+      return file.content
+    }
+  }
+  return null
 }
