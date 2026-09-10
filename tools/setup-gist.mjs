@@ -172,23 +172,29 @@ ${'─'.repeat(62)}
 ${'─'.repeat(62)}
 再下一步：改快捷指令，让它往信箱里写
 
-  在「同步到 Carlories」里加一个「获取 URL 内容」：
+  加一个「获取 URL 内容」：
 
     网址：${DEFAULT_API}/gists/${gistId}
     方法：PATCH
-    头部：Authorization = Bearer <你刚才那个 gist token>
-          Accept        = application/vnd.github+json
+    头部 1：Authorization = Bearer <你那个 gist token>
+    头部 2：Accept        = application/vnd.github+json
     请求体：JSON
-    请求体内容（把两个方括号换成变量）：
 
-      {"files":{"${GIST_FILENAME}":{"content":"CAL/TODAY ACT=[活动统计结果] RST=[静息统计结果]"}}}
+  「请求体」这里打开的是**键值对编辑器**，不是粘 JSON 的文本框。
+  只加**一个**字段就够了：
 
-  ⚠️ 整段 JSON 用**一个「文本」动作**手打即可，不需要搭嵌套字典。
-     方括号那两处拖入「计算统计」的结果，它们应该是纯数字。
+    键：description
+    类型：文本
+    值：CAL/TODAY ACT=[活动统计结果] RST=[静息统计结果]
+
+  方括号两处拖入「计算统计」的结果。**不需要套嵌套字典。**
+
+  （也可以写到文件里：files → carlories.txt → content。但那是三层嵌套，
+    更容易配错，没必要。）
 
   改完手动跑一次，然后打开
     ${url}
-  看 carlories.txt 里的内容对不对。对不上就把快捷指令的报错发我。
+  描述那一行应该变成 "CAL/TODAY ACT=… RST=…"。
 
 ${'─'.repeat(62)}`)
 
